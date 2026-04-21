@@ -1,8 +1,9 @@
-const CACHE = "holzservice-v1";
+const CACHE = "holzservice-v2";
 const ASSETS = [
-  "/",
-  "/index.html",
-  "/manifest.json",
+  "/TischlerApp/",
+  "/TischlerApp/index.html",
+  "/TischlerApp/manifest.json",
+  "/TischlerApp/sw.js",
   "https://unpkg.com/react@18/umd/react.development.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.development.js",
   "https://unpkg.com/@babel/standalone/babel.min.js"

@@ -6,12 +6,12 @@
   <title>Holzservice Rump</title>
 
   <!-- PWA -->
-  <link rel="manifest" href="manifest.json" />
+  <link rel="manifest" href="/TischlerApp/manifest.json" />
   <meta name="theme-color" content="#2b2217" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Holzservice" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="apple-touch-icon" href="/TischlerApp/icon-192.png" />
 
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -171,7 +171,7 @@
 
     // Service Worker registrieren
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js").catch(()=>{});
+      navigator.serviceWorker.register("/TischlerApp/sw.js", { scope: "/TischlerApp/" }).catch(()=>{});
     }
   </script>
   <script type="module">
