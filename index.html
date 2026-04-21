@@ -1,0 +1,2526 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Holzservice Rump</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#2b2217" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Holzservice" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.3.136/pdf.min.mjs" type="module"></script>
+  <style>
+    html, body, #root { margin:0; padding:0; min-height:100%; }
+    body { background:#f5f0e8; }
+    * { box-sizing:border-box; }
+    a { color:inherit; }
+    button, input, select, textarea { font:inherit; }
+
+    /* PIN Screen */
+    #pin-screen {
+      position:fixed; inset:0; background:#2b2217;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      z-index:9999; padding:32px 24px;
+    }
+    #pin-screen.hidden { display:none; }
+    .pin-logo { font-size:48px; margin-bottom:8px; }
+    .pin-title { color:#f5f0e8; font-size:22px; font-weight:700; font-family:Georgia,serif; letter-spacing:1px; margin-bottom:4px; }
+    .pin-sub { color:#8b7355; font-size:13px; margin-bottom:36px; }
+    .pin-dots { display:flex; gap:12px; margin-bottom:28px; }
+    .pin-dot { width:16px; height:16px; border-radius:50%; background:#8b7355; transition:background .15s; }
+    .pin-dot.filled { background:#d4a017; }
+    .pin-pad { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; width:240px; }
+    .pin-btn {
+      background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12);
+      border-radius:12px; color:#f5f0e8; font-size:24px; font-weight:700;
+      padding:16px; cursor:pointer; font-family:Georgia,serif;
+      transition:background .1s; user-select:none;
+    }
+    .pin-btn:active { background:rgba(212,160,23,0.35); }
+    .pin-btn.del { font-size:18px; }
+    .pin-error { color:#e07070; font-size:13px; margin-top:16px; min-height:20px; }
+    .pin-hint { color:#555; font-size:11px; margin-top:20px; }
+  </style>
+</head>
+<body>
+
+  <!-- PIN Sperrbildschirm -->
+  <div id="pin-screen">
+    <div class="pin-logo">🪵</div>
+    <div class="pin-title">Holzservice Rump</div>
+    <div class="pin-sub">Projektverwaltung</div>
+    <div class="pin-dots" id="pinDots">
+      <div class="pin-dot"></div>
+      <div class="pin-dot"></div>
+      <div class="pin-dot"></div>
+      <div class="pin-dot"></div>
+    </div>
+    <div class="pin-pad">
+      <button class="pin-btn" onclick="pinPress('1')">1</button>
+      <button class="pin-btn" onclick="pinPress('2')">2</button>
+      <button class="pin-btn" onclick="pinPress('3')">3</button>
+      <button class="pin-btn" onclick="pinPress('4')">4</button>
+      <button class="pin-btn" onclick="pinPress('5')">5</button>
+      <button class="pin-btn" onclick="pinPress('6')">6</button>
+      <button class="pin-btn" onclick="pinPress('7')">7</button>
+      <button class="pin-btn" onclick="pinPress('8')">8</button>
+      <button class="pin-btn" onclick="pinPress('9')">9</button>
+      <button class="pin-btn" onclick="pinPress('del')" style="font-size:13px;color:#8b7355">PIN<br>ändern</button>
+      <button class="pin-btn" onclick="pinPress('0')">0</button>
+      <button class="pin-btn del" onclick="pinPress('back')">⌫</button>
+    </div>
+    <div class="pin-error" id="pinError"></div>
+    <div class="pin-hint" id="pinHint"></div>
+  </div>
+
+  <div id="root"></div>
+
+  <script>
+    // ── PIN Logik ──────────────────────────────────────────────────────────────
+    const PIN_KEY = "hr_pin";
+    const SESSION_KEY = "hr_session";
+    let pinInput = "";
+    let settingPin = false;
+    let newPinBuffer = "";
+
+    function pinPress(val) {
+      const storedPin = localStorage.getItem(PIN_KEY);
+      const err = document.getElementById("pinError");
+      const hint = document.getElementById("pinHint");
+
+      // PIN ändern
+      if (val === "del") {
+        settingPin = true; newPinBuffer = ""; pinInput = "";
+        hint.textContent = "Neuen 4-stelligen PIN eingeben:";
+        err.textContent = ""; updateDots(); return;
+      }
+      if (val === "back") { pinInput = pinInput.slice(0,-1); updateDots(); return; }
+
+      pinInput += val;
+      updateDots();
+
+      if (pinInput.length < 4) return;
+
+      if (settingPin) {
+        if (!newPinBuffer) {
+          newPinBuffer = pinInput; pinInput = "";
+          hint.textContent = "PIN wiederholen:"; updateDots(); return;
+        }
+        if (newPinBuffer === pinInput) {
+          localStorage.setItem(PIN_KEY, pinInput);
+          sessionStorage.setItem(SESSION_KEY, "1");
+          unlock(); return;
+        } else {
+          err.textContent = "PINs stimmen nicht überein – nochmal:";
+          pinInput = ""; newPinBuffer = ""; updateDots(); return;
+        }
+      }
+
+      // Erster Start – PIN setzen
+      if (!storedPin) {
+        if (!newPinBuffer) {
+          newPinBuffer = pinInput; pinInput = "";
+          hint.textContent = "PIN wiederholen:"; err.textContent=""; updateDots(); return;
+        }
+        if (newPinBuffer === pinInput) {
+          localStorage.setItem(PIN_KEY, pinInput);
+          sessionStorage.setItem(SESSION_KEY, "1");
+          unlock(); return;
+        } else {
+          err.textContent = "PINs stimmen nicht überein – nochmal:";
+          pinInput = ""; newPinBuffer = ""; updateDots(); return;
+        }
+      }
+
+      // PIN prüfen
+      if (pinInput === storedPin) {
+        sessionStorage.setItem(SESSION_KEY, "1");
+        unlock();
+      } else {
+        err.textContent = "Falscher PIN – nochmal versuchen";
+        pinInput = ""; updateDots();
+      }
+    }
+
+    function updateDots() {
+      document.querySelectorAll(".pin-dot").forEach((d,i) => {
+        d.classList.toggle("filled", i < pinInput.length);
+      });
+    }
+
+    function unlock() {
+      document.getElementById("pin-screen").classList.add("hidden");
+    }
+
+    // Session check – nach Entsperren in dieser Sitzung nicht mehr fragen
+    window.addEventListener("DOMContentLoaded", () => {
+      const storedPin = localStorage.getItem(PIN_KEY);
+      if (sessionStorage.getItem(SESSION_KEY) === "1") { unlock(); return; }
+      if (!storedPin) {
+        document.getElementById("pinHint").textContent = "Ersten 4-stelligen PIN festlegen:";
+      }
+    });
+
+    // Service Worker registrieren
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(()=>{});
+    }
+  </script>
+  <script type="module">
+    import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.3.136/pdf.min.mjs';
+    window.pdfjsLib = pdfjsLib;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.3.136/pdf.worker.min.mjs';
+  </script>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    
+
+// ─── Beispieldaten ────────────────────────────────────────────────────────────
+const initialProjects = [
+  {
+    "id": 10048,
+    "kunde": "Renneke Knaup Berhorst Steuerberatungsgesellschaft mbH",
+    "ansprechpartner": "",
+    "adresse": "Klingenderstraße 6, 33100 Paderborn",
+    "auftrag": "Schreibtisch gemäß Zeichnung „Schreibtisch V3“",
+    "status": "angebot",
+    "deadline": "2025-07-11",
+    "budget": 2262.86,
+    "notiz": "AG0048 · Schreibtisch ca. 2700×900×750 mm, Achatgrau / Halifax Eiche",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0048",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100481,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100482,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      },
+      {
+        "id": 100483,
+        "text": "Zeichnung final abstimmen",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 10062,
+    "kunde": "Louis Kahle",
+    "ansprechpartner": "Herr Louis Kahle",
+    "adresse": "Timmerdamm 4, 33129 Delbrück",
+    "auftrag": "Reparatur Haustür Werkstatt",
+    "status": "angebot",
+    "deadline": "2026-03-30",
+    "budget": 1222.13,
+    "notiz": "AG0062 · Ausbau, Schleifen, Spachteln, Lackieren + neue Kassettenfüllung und Glas",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0062",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100621,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100622,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10063,
+    "kunde": "Sebastian Saßmanshausen",
+    "ansprechpartner": "Herr Sebastian Saßmanshausen",
+    "adresse": "Dalbker Str. 54b, 33813 Oerlinghausen",
+    "auftrag": "Innentüren und Beschläge",
+    "status": "angebot",
+    "deadline": "2026-03-11",
+    "budget": 5075.22,
+    "notiz": "AG0063 · Mehrere Innentüren, Drücker und Bänder; optional Durchgangszarge / Glastür",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0063",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100631,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100632,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 10064,
+    "kunde": "Dieter Burkert",
+    "ansprechpartner": "Herr Dieter Burkert",
+    "adresse": "Bornweg 24, 33178 Borchen",
+    "auftrag": "Instandsetzung Treppenstufen",
+    "status": "angebot",
+    "deadline": "2026-03-18",
+    "budget": 692.58,
+    "notiz": "AG0064 · Ausbau, Aufbohren, Einschraubmuttern M8, Wiedermontage",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0064",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100641,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100642,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10065,
+    "kunde": "Jürgen Linke",
+    "ansprechpartner": "Jürgen Linke",
+    "adresse": "Rosenstraße 2, 33154 Salzkotten",
+    "auftrag": "Eingangstür, Innentüren und Ganzglastür",
+    "status": "angebot",
+    "deadline": "2026-02-28",
+    "budget": 3249.47,
+    "notiz": "AG0065 · Preisbindung bis 28.02.2026, Liefertermin ca. 10–12 Wochen",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0065",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100651,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100652,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10066,
+    "kunde": "Sebastian Saßmanshausen",
+    "ansprechpartner": "Herr Sebastian Saßmanshausen",
+    "adresse": "Dalbker Str. 54b, 33813 Oerlinghausen",
+    "auftrag": "Rollladen / Aluminium-Panzer und Antriebe",
+    "status": "angebot",
+    "deadline": "2026-03-24",
+    "budget": 1570.74,
+    "notiz": "AG0066 · Angebot ohne Schalter und ohne Steuerungen",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0066",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100661,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100662,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10067,
+    "kunde": "Gani",
+    "ansprechpartner": "Herr Gani",
+    "adresse": "Lohweg 13, 33154 Salzkotten",
+    "auftrag": "Nebeneingangstür 1-teilig",
+    "status": "angebot",
+    "deadline": "2026-03-24",
+    "budget": 2017.05,
+    "notiz": "AG0067 · Demontage alte Tür, Vorbereitung Maueröffnung, Montage neue Tür",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0067",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100671,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100672,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10069,
+    "kunde": "Weg Spinnerstraße 21 / Hausverwaltung GmbH",
+    "ansprechpartner": "Dr. Willeke",
+    "adresse": "Spinnerstraße 21, 33607 Bielefeld",
+    "auftrag": "AKF Kunststoffkellerfenster + Schutzgitter",
+    "status": "angebot",
+    "deadline": "2026-04-15",
+    "budget": 872.89,
+    "notiz": "AG0069 · klassische Kellerfenster wegen niedriger Einbauhöhe",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0069",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100691,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100692,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10070,
+    "kunde": "Bernd Hack",
+    "ansprechpartner": "Herr Bernd Hack",
+    "adresse": "Friedrich-Wilhelm-Weber-Straße 16, 33106 Paderborn",
+    "auftrag": "Wohnungseingangstür Schallschutz 1",
+    "status": "angebot",
+    "deadline": "2026-04-17",
+    "budget": 647.74,
+    "notiz": "AG0070 · Lieferung ohne Montage, Optionen SSK3 / Nebeneingangstür / Bodendichtung",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0070",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100701,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100702,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": true
+      }
+    ]
+  },
+  {
+    "id": 10071,
+    "kunde": "Sebastian Birwald",
+    "ansprechpartner": "Sebastian Birwald",
+    "adresse": "Auf dem Kerslah 7, 33178 Borchen",
+    "auftrag": "Schrank in der Dachschräge + Küche",
+    "status": "angebot",
+    "deadline": "2026-04-22",
+    "budget": 2589.96,
+    "notiz": "AG0071 · inkl. Lieferung und Montage, Option PerfectSense Arbeitsplatte",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0071",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100711,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100712,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 10072,
+    "kunde": "GS Verbund Kirchborchen-Etteln",
+    "ansprechpartner": "Frau Lisa Nordmeyer",
+    "adresse": "Hohlweg 3, 33178 Borchen",
+    "auftrag": "Fertigung Holzlogos",
+    "status": "angebot",
+    "deadline": "2026-04-23",
+    "budget": 2618,
+    "notiz": "AG0072 · 10 Holzlogos DIN A3 + 2 große Logos, inkl. Lackierung und Rabatt",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0072",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100721,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100722,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 10060,
+    "kunde": "Lea Böwer",
+    "ansprechpartner": "Frau Lea Böwer",
+    "adresse": "Gleiwitzer Straße 53 1OG Links, 33098 Paderborn",
+    "auftrag": "Offener Korpus mit 2 Mittelböden ohne Tür",
+    "status": "angebot",
+    "deadline": "2026-02-15",
+    "budget": 236.54,
+    "notiz": "AG0060 · Optional: Montage am vorhandenen Korpus",
+    "telefon": "",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AG0060",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 100601,
+        "text": "Angebot erstellt",
+        "erledigt": true
+      },
+      {
+        "id": 100602,
+        "text": "Kundenfreigabe erhalten",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 1,
+    "kunde": "Familie Müller",
+    "ansprechpartner": "Thomas Müller",
+    "adresse": "Musterstraße 12, 80331 München",
+    "auftrag": "Einbauküche Eiche",
+    "status": "in_arbeit",
+    "deadline": "2026-04-15",
+    "budget": 6800,
+    "notiz": "Aufmaß gemacht, Planung fertig",
+    "telefon": "0171 234567",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AN-2026-011",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "AU-2026-008",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [
+      {
+        "id": 11,
+        "titel": "Aufmaß vor Ort",
+        "datum": "2026-03-25",
+        "uhrzeit": "09:00",
+        "dauer": 60,
+        "notiz": "Schlüssel bei Nachbar"
+      },
+      {
+        "id": 12,
+        "titel": "Montage Küche",
+        "datum": "2026-04-10",
+        "uhrzeit": "07:00",
+        "dauer": 480,
+        "notiz": ""
+      }
+    ],
+    "bestellungen": [
+      {
+        "id": 101,
+        "material": "Eichenholz 20mm",
+        "menge": "12 Platten",
+        "lieferant": "Holz Wagner",
+        "bestellt": true,
+        "liefertermin": "2026-03-28",
+        "erhalten": false
+      },
+      {
+        "id": 102,
+        "material": "Scharniere Blum",
+        "menge": "24 Stück",
+        "lieferant": "Häfele",
+        "bestellt": false,
+        "liefertermin": "",
+        "erhalten": false
+      }
+    ],
+    "stunden": [
+      {
+        "id": 201,
+        "datum": "2026-03-20",
+        "taetigkeit": "Aufmaß & Planung",
+        "stunden": 2.5,
+        "stundensatz": 65
+      }
+    ],
+    "checkliste": [
+      {
+        "id": 301,
+        "text": "Aufmaß genommen",
+        "erledigt": true
+      },
+      {
+        "id": 302,
+        "text": "Planung freigegeben",
+        "erledigt": true
+      },
+      {
+        "id": 303,
+        "text": "Material bestellt",
+        "erledigt": false
+      },
+      {
+        "id": 304,
+        "text": "Montage abgeschlossen",
+        "erledigt": false
+      },
+      {
+        "id": 305,
+        "text": "Abnahme durchgeführt",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "kunde": "Büro Schmidt GmbH",
+    "ansprechpartner": "Petra Schmidt",
+    "adresse": "Gewerbepark 5, 81379 München",
+    "auftrag": "Schreibtische x4",
+    "status": "angebot",
+    "deadline": "2026-04-30",
+    "budget": 3200,
+    "notiz": "Angebot rausgeschickt",
+    "telefon": "089 445566",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AN-2026-014",
+    "lex_auftragsbestaetigung": false,
+    "lex_auftragsnr": "",
+    "lex_lieferschein": false,
+    "lex_lieferscheinnr": "",
+    "lex_rechnung": false,
+    "lex_rechnungsnr": "",
+    "abnahme_bestaetigt": false,
+    "abnahme_datum": "",
+    "abnahme_notiz": "",
+    "zahlung_eingegangen": false,
+    "zahlung_datum": "",
+    "termine": [],
+    "bestellungen": [],
+    "stunden": [],
+    "checkliste": [
+      {
+        "id": 401,
+        "text": "Angebot verschickt",
+        "erledigt": true
+      },
+      {
+        "id": 402,
+        "text": "Auftragsbestätigung erhalten",
+        "erledigt": false
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "kunde": "Herr Bauer",
+    "ansprechpartner": "Klaus Bauer",
+    "adresse": "Gartenweg 3, 82031 Grünwald",
+    "auftrag": "Terrassendielen",
+    "status": "fertig",
+    "deadline": "2026-03-10",
+    "budget": 1900,
+    "notiz": "Abgenommen, Rechnung gestellt",
+    "telefon": "0160 998877",
+    "drive_link": "",
+    "lex_angebot": true,
+    "lex_angebotsnr": "AN-2026-003",
+    "lex_auftragsbestaetigung": true,
+    "lex_auftragsnr": "AU-2026-002",
+    "lex_lieferschein": true,
+    "lex_lieferscheinnr": "LS-2026-002",
+    "lex_rechnung": true,
+    "lex_rechnungsnr": "RE-2026-042",
+    "abnahme_bestaetigt": true,
+    "abnahme_datum": "2026-03-10",
+    "abnahme_notiz": "Kunde sehr zufrieden",
+    "zahlung_eingegangen": true,
+    "zahlung_datum": "2026-03-18",
+    "termine": [],
+    "bestellungen": [
+      {
+        "id": 301,
+        "material": "Lärche Dielen 28mm",
+        "menge": "42 qm",
+        "lieferant": "Holz Wagner",
+        "bestellt": true,
+        "liefertermin": "2026-02-20",
+        "erhalten": true
+      }
+    ],
+    "stunden": [
+      {
+        "id": 501,
+        "datum": "2026-03-08",
+        "taetigkeit": "Terrassenbau",
+        "stunden": 8,
+        "stundensatz": 65
+      },
+      {
+        "id": 502,
+        "datum": "2026-03-09",
+        "taetigkeit": "Terrassenbau",
+        "stunden": 8,
+        "stundensatz": 65
+      }
+    ],
+    "checkliste": [
+      {
+        "id": 601,
+        "text": "Aufmaß genommen",
+        "erledigt": true
+      },
+      {
+        "id": 602,
+        "text": "Material geliefert",
+        "erledigt": true
+      },
+      {
+        "id": 603,
+        "text": "Montage abgeschlossen",
+        "erledigt": true
+      },
+      {
+        "id": 604,
+        "text": "Abnahme durchgeführt",
+        "erledigt": true
+      }
+    ]
+  }
+];
+
+const STATUS = {
+  angebot:   { label: "Angebot",   farbe: "#d4a017", bg: "#fef9ec" },
+  in_arbeit: { label: "In Arbeit", farbe: "#2e7d5e", bg: "#edf7f3" },
+  fertig:    { label: "Fertig",    farbe: "#555",    bg: "#f2f2f2" },
+  pausiert:  { label: "Pausiert",  farbe: "#c0392b", bg: "#fdf0ef" },
+};
+
+const TABS = [
+  { id: "lexoffice", label: "📋 Lexoffice" },
+  { id: "checkliste", label: "✅ Checkliste" },
+  { id: "termine", label: "📅 Termine" },
+  { id: "material", label: "📦 Material" },
+  { id: "stunden", label: "⏱ Stunden" },
+  { id: "abnahme", label: "🖊 Abnahme" },
+];
+
+const leerProjekt = {
+  id: null, kunde: "", ansprechpartner: "", adresse: "", auftrag: "",
+  status: "angebot", deadline: "", budget: "", notiz: "", telefon: "", drive_link: "",
+  lex_angebot: false, lex_angebotsnr: "", lex_auftragsbestaetigung: false, lex_auftragsnr: "",
+  lex_lieferschein: false, lex_lieferscheinnr: "", lex_rechnung: false, lex_rechnungsnr: "",
+  abnahme_bestaetigt: false, abnahme_datum: "", abnahme_notiz: "",
+  zahlung_eingegangen: false, zahlung_datum: "",
+  termine: [], bestellungen: [], stunden: [], checkliste: [],
+};
+
+// ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
+function tageBis(d) {
+  if (!d) return null;
+  const h = new Date(); h.setHours(0,0,0,0);
+  return Math.round((new Date(d) - h) / 86400000);
+}
+function fmtDate(d, opts) {
+  if (!d) return "";
+  return new Date(d).toLocaleDateString("de-DE", opts || { day:"2-digit", month:"short", year:"numeric" });
+}
+function googleLink(t, kunde, auftrag) {
+  if (!t.datum) return null;
+  const s = t.datum.replace(/-/g,"") + "T" + (t.uhrzeit||"08:00").replace(":","") + "00";
+  const e = new Date(t.datum+"T"+(t.uhrzeit||"08:00"));
+  e.setMinutes(e.getMinutes()+(t.dauer||60));
+  const end = e.toISOString().replace(/[-:]/g,"").split(".")[0];
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(t.titel+" – "+kunde)}&dates=${s}/${end}&details=${encodeURIComponent("Auftrag: "+auftrag+"\n"+(t.notiz||""))}`;
+}
+
+function normalizePdfLine(s) {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+function parseEuroNumber(s) {
+  if (!s) return 0;
+  return Number(String(s).replace(/[()]/g, "").replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "")) || 0;
+}
+function parseGermanDateToIso(s) {
+  const m = String(s || "").match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
+}
+function extractPdfLines(items) {
+  const rows = [];
+  const sorted = [...items].sort((a,b) => {
+    const ay = a.transform[5], by = b.transform[5];
+    if (Math.abs(by - ay) > 2) return by - ay;
+    return a.transform[4] - b.transform[4];
+  });
+  for (const item of sorted) {
+    const str = normalizePdfLine(item.str);
+    if (!str) continue;
+    const y = item.transform[5];
+    let row = rows.find(r => Math.abs(r.y - y) <= 2);
+    if (!row) {
+      row = { y, parts: [] };
+      rows.push(row);
+    }
+    row.parts.push({ x: item.transform[4], str });
+  }
+  return rows
+    .sort((a,b) => b.y - a.y)
+    .map(r => r.parts.sort((a,b) => a.x - b.x).map(p => p.str).join(" "))
+    .map(normalizePdfLine)
+    .filter(Boolean);
+}
+function isMetaNoiseLine(line) {
+  return /^(Seite \d+\/\d+|Übertrag\b|Pos\.|Bezeichnung\b|Menge\b|Einzel\b|Gesamt\b|Holzservice Rump\b|Steuernummer:|Volksbank|IBAN:|BIC:|Tel\.:|www\.|p\.rump@)/i.test(line);
+}
+function parseOfferPositions(lines) {
+  const positions = [];
+  let current = null;
+  const finish = () => {
+    if (!current) return;
+    current.title = normalizePdfLine(current.title || "");
+    current.details = normalizePdfLine((current.details || []).join(" "));
+    current.qtyText = normalizePdfLine(current.qtyText || "");
+    if (current.title) positions.push(current);
+    current = null;
+  };
+  for (const raw of lines) {
+    const line = normalizePdfLine(raw);
+    if (!line || isMetaNoiseLine(line) || /^Zwischensumme\b/i.test(line) || /^Umsatzsteuer\b/i.test(line) || /^Gesamtbetrag\b/i.test(line) || /^Zahlbar\b/i.test(line)) continue;
+    const startMatch = line.match(/^((?:O\d+)|\d+)\s+(.*)$/i);
+    const qtyMatch = line.match(/^(\d+(?:[.,]\d+)?)\s+(Stück|Stk\.?|qm|m²|m2|lfm|Pauschal|Std\.?|Stunden?)\s+([()0-9.,]+)(?:\s+([()0-9.,]+))?$/i);
+    if (startMatch) {
+      finish();
+      const pos = startMatch[1];
+      const rest = startMatch[2] || "";
+      current = {
+        pos,
+        optional: /^O\d+/i.test(pos) || /optionale position/i.test(line),
+        title: rest,
+        details: [],
+        qtyText: "",
+        einzelpreis: 0,
+        gesamtpreis: 0
+      };
+      continue;
+    }
+    if (!current) continue;
+    if (qtyMatch) {
+      current.qtyText = `${qtyMatch[1]} ${qtyMatch[2]}`;
+      current.einzelpreis = parseEuroNumber(qtyMatch[3]);
+      current.gesamtpreis = parseEuroNumber(qtyMatch[4] || qtyMatch[3]);
+      finish();
+      continue;
+    }
+    current.details.push(line);
+  }
+  finish();
+  return positions;
+}
+function parseCustomerBlock(page1Lines) {
+  const metaIdx = page1Lines.findIndex(l => /Angebotsnr/i.test(l));
+  const searchLines = (metaIdx >= 0 ? page1Lines.slice(Math.max(0, metaIdx - 8), metaIdx) : page1Lines).map(normalizePdfLine);
+  const cleaned = searchLines.filter(l =>
+    l &&
+    !isMetaNoiseLine(l) &&
+    !/^Zwischensumme\b/i.test(l) &&
+    !/^Angebot\b/i.test(l) &&
+    !/Gerne bieten wir/i.test(l) &&
+    !/^Normtür\b/i.test(l)
+  );
+  let name = "";
+  let address = "";
+  for (let i = 0; i < cleaned.length; i++) {
+    const line = cleaned[i];
+    if (/^(Herrn?|Frau|Firma)\b/i.test(line) || (i === 0 && cleaned.length >= 2)) {
+      name = line.replace(/^(Herrn?|Frau|Firma)\s+/i, "").trim();
+      const addrLines = cleaned.slice(i + 1).filter(l => /\d/.test(l));
+      address = addrLines.join(", ");
+      break;
+    }
+  }
+  if (!name && cleaned.length) name = cleaned[0];
+  if (!address) {
+    const addr = cleaned.filter(l => /\d/.test(l) && !/AG\d+/i.test(l));
+    address = addr.join(", ");
+  }
+  return { kunde: name || "", adresse: address || "" };
+}
+function parseOfferText(text, pagesLines, fileName) {
+  const lines = text.split(/\n+/).map(normalizePdfLine).filter(Boolean);
+  const page1 = pagesLines[0] || [];
+  const nrMatch = text.match(/\bAG\d{4}\b/i);
+  const dateMatches = [...text.matchAll(/\b\d{2}\.\d{2}\.\d{4}\b/g)].map(m => m[0]);
+  const totalMatch = text.match(/Gesamtbetrag\s+([0-9.,]+)/i);
+  const customer = parseCustomerBlock(page1);
+  const positions = parseOfferPositions(lines);
+  const firstRequired = positions.find(p => !p.optional) || positions[0] || null;
+  const optionalTitles = positions.filter(p => p.optional).map(p => p.title).filter(Boolean);
+  const offerNr = nrMatch ? nrMatch[0].toUpperCase() : "";
+  const createdDate = dateMatches[0] || "";
+  const validUntil = dateMatches[1] || "";
+  const noteParts = [
+    offerNr,
+    firstRequired?.title || "",
+    optionalTitles.length ? `Optional: ${optionalTitles.join("; ")}` : "",
+    `Import aus PDF: ${fileName}`
+  ].filter(Boolean);
+  return {
+    fileName,
+    angebotNr: offerNr,
+    datum: createdDate,
+    gueltigBis: validUntil,
+    kunde: customer.kunde,
+    adresse: customer.adresse,
+    auftrag: firstRequired?.title || (offerNr ? `Angebot ${offerNr}` : "PDF-Angebot"),
+    budget: totalMatch ? parseEuroNumber(totalMatch[1]) : positions.filter(p => !p.optional).reduce((s,p) => s + Number(p.gesamtpreis || 0), 0),
+    positions,
+    bestellungen: positions.filter(p => !p.optional).map((p, idx) => ({
+      id: Date.now() + idx,
+      material: p.title || `Position ${p.pos}`,
+      menge: p.qtyText || "",
+      lieferant: "",
+      bestellt: false,
+      liefertermin: "",
+      erhalten: false
+    })),
+    notiz: noteParts.join(" · ")
+  };
+}
+async function parseOfferPdfFile(file) {
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+  const pagesLines = [];
+  let textParts = [];
+  for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+    const page = await pdf.getPage(pageNo);
+    const content = await page.getTextContent();
+    const lines = extractPdfLines(content.items || []);
+    pagesLines.push(lines);
+    textParts.push(lines.join("\n"));
+  }
+  const text = textParts.join("\n");
+  return parseOfferText(text, pagesLines, file.name);
+}
+function makeImportedProject(parsed) {
+  const baseId = Date.now();
+  return {
+    id: baseId,
+    kunde: parsed.kunde || "",
+    ansprechpartner: "",
+    adresse: parsed.adresse || "",
+    auftrag: parsed.auftrag || "",
+    status: "angebot",
+    deadline: parseGermanDateToIso(parsed.gueltigBis),
+    budget: parsed.budget || "",
+    notiz: parsed.notiz || "",
+    telefon: "",
+    drive_link: "",
+    lex_angebot: true,
+    lex_angebotsnr: parsed.angebotNr || "",
+    lex_auftragsbestaetigung: false, lex_auftragsnr: "",
+    lex_lieferschein: false, lex_lieferscheinnr: "",
+    lex_rechnung: false, lex_rechnungsnr: "",
+    abnahme_bestaetigt: false, abnahme_datum: "", abnahme_notiz: "",
+    zahlung_eingegangen: false, zahlung_datum: "",
+    termine: [],
+    bestellungen: parsed.bestellungen || [],
+    stunden: [],
+    checkliste: [
+      { id: baseId + 1, text: "Angebot importiert", erledigt: true },
+      { id: baseId + 2, text: "Kundenfreigabe erhalten", erledigt: false }
+    ],
+  };
+}
+
+
+// ─── KI API Hilfsfunktionen ───────────────────────────────────────────────────
+async function callKI(apiKey, system, userMsg, maxTokens = 900) {
+  const headers = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+  }
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers,
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: maxTokens, system, messages: [{ role: "user", content: userMsg }] })
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.error?.message || `API Fehler ${r.status}`);
+  }
+  const d = await r.json();
+  return d.content.map(c => c.text || "").join("");
+}
+function parseKIJSON(text) {
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+// ─── Shared Styles ────────────────────────────────────────────────────────────
+const inp = { width:"100%", border:"1.5px solid #d6cfc4", borderRadius:6, padding:"6px 9px", fontSize:13, background:"#fff", fontFamily:"Georgia,serif", boxSizing:"border-box" };
+const inpSm = { ...inp, fontSize:12, padding:"4px 7px" };
+const btnOutline = (c) => ({ background:"none", border:`1.5px solid ${c}`, color:c, borderRadius:6, padding:"4px 9px", cursor:"pointer", fontSize:13, fontFamily:"Georgia,serif" });
+const labelSt = { display:"block", fontSize:11, fontWeight:700, marginBottom:3, opacity:0.5, letterSpacing:0.5, textTransform:"uppercase" };
+const secTitle = { fontSize:11, fontWeight:700, margin:"14px 0 8px", textTransform:"uppercase", letterSpacing:0.6, opacity:0.4 };
+
+function Badge({ t }) {
+  if (!t) return null;
+  const farbe = t < 0 ? "#c0392b" : t <= 7 ? "#e67e22" : "#2e7d5e";
+  return <span style={{ fontSize:11, fontWeight:700, color:farbe, background:farbe+"18", borderRadius:6, padding:"2px 7px" }}>
+    {t < 0 ? `${Math.abs(t)}d überfällig` : t === 0 ? "Heute!" : `${t}d`}
+  </span>;
+}
+
+// ─── KI ASSISTENT PANEL ───────────────────────────────────────────────────────
+function googleCalLink(t, extra) {
+  if (!t.datum) return null;
+  const p = t.datum.split(".");
+  if (p.length !== 3) return null;
+  const d = `${p[2]}${p[1].padStart(2,"0")}${p[0].padStart(2,"0")}`;
+  const uhr = (t.uhrzeit||"08:00").replace(":","");
+  const h = parseInt((t.uhrzeit||"08:00").split(":")[0]);
+  const m = (t.uhrzeit||"08:00").split(":")[1];
+  const endH = String(h+1).padStart(2,"0");
+  const start = `${d}T${uhr}00`, end = `${d}T${endH}${m}00`;
+  const title = encodeURIComponent(t.beschreibung+(extra?` – ${extra}`:""));
+  const details = encodeURIComponent(`Typ: ${t.typ||""}\nKunde: ${t.kunde||""}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
+}
+
+function downloadICS(termine) {
+  const pad = n => String(n).padStart(2,"0");
+  const now = new Date();
+  const dtStamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}T${pad(now.getHours())}${pad(now.getMinutes())}00Z`;
+  let cal = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Tischler KI//DE\r\n";
+  termine.forEach((t,i) => {
+    if (!t.datum) return;
+    const p = t.datum.split(".");
+    if (p.length !== 3) return;
+    const d = `${p[2]}${p[1].padStart(2,"0")}${p[0].padStart(2,"0")}`;
+    const uhr = (t.uhrzeit||"08:00").replace(":","");
+    const h = parseInt((t.uhrzeit||"08:00").split(":")[0]);
+    const m = (t.uhrzeit||"08:00").split(":")[1];
+    const endH = String(h+1).padStart(2,"0");
+    cal += `BEGIN:VEVENT\r\nUID:tki-${Date.now()}-${i}@rump\r\nDTSTAMP:${dtStamp}\r\n`;
+    cal += `DTSTART:${d}T${uhr}00\r\nDTEND:${d}T${endH}${m}00\r\n`;
+    cal += `SUMMARY:${(t.beschreibung||"Termin").replace(/[,;\\]/g,"\\$&")}\r\n`;
+    cal += `DESCRIPTION:${(t.typ||"")} · ${(t.kunde||"")}\r\n`;
+    cal += `END:VEVENT\r\n`;
+  });
+  cal += "END:VCALENDAR";
+  const blob = new Blob([cal], { type:"text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href=url; a.download="termine.ics"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function KIAssistentPanel({ projekte, apiKey, onNeueProjekt }) {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [savingTermin, setSavingTermin] = useState(null);
+
+  async function analyze() {
+    if (!input.trim()) return;
+    setLoading(true); setResult(null);
+    try {
+      const sys = `Du bist Assistent für Holzservice Rump, einen selbständigen Tischler in Deutschland.
+Analysiere die Nachricht und extrahiere alle relevanten Informationen.
+Antworte NUR mit JSON (kein Markdown, keine Erklärung):
+{
+  "zusammenfassung":"1-2 Sätze",
+  "termine":[{"datum":"TT.MM.JJJJ oder leer","uhrzeit":"HH:MM oder leer","beschreibung":"...","typ":"Kundentermin|Montage|Lieferung|Besichtigung","kunde":"Name oder leer"}],
+  "auftraege":[{"kunde":"...","beschreibung":"...","adresse":"...","prioritaet":"hoch|mittel|niedrig"}],
+  "bestellungen":[{"artikel":"...","menge":"...","lieferant":"...","notiz":"..."}],
+  "aufgaben":[{"aufgabe":"...","faellig":"..."}]
+}
+Wenn eine Kategorie leer ist: []. Datum immer TT.MM.JJJJ. Aktuelle Jahreszahl: 2026.`;
+      const text = await callKI(apiKey, sys, input);
+      setResult(parseKIJSON(text));
+    } catch(e) {
+      const isNetwork = e.message==="Failed to fetch"||e.message.includes("fetch");
+      setResult({ error: isNetwork
+        ? "🔑 Verbindung fehlgeschlagen – API-Key fehlt.\n\nLösung: Scroll nach oben → 🤖-Button → API-Key von console.anthropic.com eintragen.\n\nOder: Datei in Claude.ai öffnen (dort kein Key nötig)."
+        : e.message });
+    }
+    finally { setLoading(false); }
+  }
+
+  function parseGermanDate(s) {
+    if (!s) return "";
+    const p = s.split("."); if (p.length===3) return `${p[2].padStart(4,"0")}-${p[1].padStart(2,"0")}-${p[0].padStart(2,"0")}`;
+    return "";
+  }
+
+  function terminSpeichern(t, projektId) {
+    if (!projektId) return;
+    const neuerTermin = { id:Date.now(), titel:t.beschreibung||"KI-Termin", datum:parseGermanDate(t.datum)||new Date().toISOString().slice(0,10), uhrzeit:t.uhrzeit||"", dauer:60, notiz:`Via KI · ${t.typ||""}` };
+    const proj = projekte.find(p=>p.id===Number(projektId));
+    if (!proj) return;
+    onNeueProjekt({...proj, termine:[...(proj.termine||[]),neuerTermin]});
+    setSavingTermin(null);
+    setResult(prev=>({...prev, _saved:(prev._saved||[]).concat(t.beschreibung)}));
+  }
+
+  const badgeFarbe = { hoch:"#c0392b", mittel:"#d4a017", niedrig:"#2e7d5e" };
+  const allTermine = result?.termine?.filter(t=>t.datum)||[];
+
+  return (
+    <div style={{ margin:"0 28px 12px", background:open?"#fff":"transparent", border:`1.5px solid ${open?"#d6cfc4":"transparent"}`, borderRadius:10, overflow:"hidden" }}>
+      <div onClick={()=>setOpen(o=>!o)} style={{ padding:"10px 14px", display:"flex", alignItems:"center", gap:10, cursor:"pointer", background:open?"#fff":"#faf7f2", borderRadius:open?0:10, borderBottom:open?"1px solid #ede8df":"none" }}>
+        <span style={{fontSize:16}}>🤖</span>
+        <div style={{flex:1}}>
+          <span style={{fontWeight:700,fontSize:13}}>KI-Assistent</span>
+          <span style={{fontSize:11,color:"#8b7355",marginLeft:8}}>WhatsApp & E-Mail analysieren · Aufträge & Termine erkennen</span>
+        </div>
+        <span style={{fontSize:12,color:"#aaa",fontFamily:"monospace"}}>{open?"▲":"▼"}</span>
+      </div>
+
+      {open && (
+        <div style={{padding:"14px 18px 18px"}}>
+          <textarea value={input} onChange={e=>setInput(e.target.value)}
+            placeholder={'WhatsApp-Nachricht oder E-Mail hier einfügen …\n\nz.B.: "[7.4., 12:22] Reiner: Hi Patrick, Ostern gut verbracht, hast du einen Plan wann du kommst? In der Regel bin ich um 16:45 zuhause. Gruß Rainer"'}
+            style={{width:"100%",border:"1.5px solid #d6cfc4",borderRadius:8,padding:"10px 12px",fontSize:13,fontFamily:"Georgia,serif",minHeight:110,resize:"vertical",background:"#fffdf8",boxSizing:"border-box"}} />
+          <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap",alignItems:"center"}}>
+            <button onClick={analyze} disabled={loading||!input.trim()}
+              style={{background:"#2b2217",color:"#f5f0e8",border:"none",borderRadius:8,padding:"8px 20px",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"Georgia,serif",opacity:loading||!input.trim()?0.5:1}}>
+              {loading?"⏳ KI analysiert…":"🔍 Analysieren"}
+            </button>
+            {input&&<button onClick={()=>{setInput("");setResult(null);}} style={{background:"none",border:"1.5px solid #d6cfc4",color:"#888",borderRadius:8,padding:"8px 12px",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>Leeren</button>}
+          </div>
+
+          {result?.error && (
+            <div style={{marginTop:12,background:"#fdf0ef",color:"#8e2f24",border:"1px solid #e6b8b2",borderRadius:8,padding:"12px 14px",fontSize:13,whiteSpace:"pre-line",lineHeight:1.6}}>
+              {result.error}
+            </div>
+          )}
+
+          {result && !result.error && (
+            <div style={{marginTop:16,display:"flex",flexDirection:"column",gap:12}}>
+              {result.zusammenfassung && (
+                <div style={{background:"#fef9ec",border:"1px solid #f0d890",borderRadius:8,padding:"10px 14px",fontSize:13,borderLeft:"4px solid #d4a017"}}>
+                  📌 <strong>{result.zusammenfassung}</strong>
+                </div>
+              )}
+
+              {result.termine?.length > 0 && (
+                <div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}>
+                    <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:0.6,opacity:0.4}}>📅 Erkannte Termine ({result.termine.length})</div>
+                    {allTermine.length>0 && (
+                      <button onClick={()=>downloadICS(allTermine)}
+                        style={{background:"#4285f4",color:"#fff",border:"none",borderRadius:6,padding:"4px 11px",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                        ⬇️ Alle als .ics (Kalender-Import)
+                      </button>
+                    )}
+                  </div>
+                  {result.termine.map((t,i)=>{
+                    const gcUrl = googleCalLink(t, t.kunde);
+                    const saved = result._saved?.includes(t.beschreibung);
+                    return (
+                      <div key={i} style={{background:"#fff",border:"1.5px solid #ede8df",borderRadius:8,padding:"10px 13px",marginBottom:7}}>
+                        <div style={{fontWeight:700,marginBottom:3}}>{t.beschreibung}</div>
+                        <div style={{fontSize:12,color:"#666"}}>
+                          {t.datum&&`📅 ${t.datum} `}{t.uhrzeit&&`🕐 ${t.uhrzeit} Uhr `}{t.kunde&&`👤 ${t.kunde}`}
+                          <span style={{marginLeft:6,background:"#f1f3f4",borderRadius:5,padding:"1px 7px",fontSize:11}}>{t.typ}</span>
+                        </div>
+                        <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                          {gcUrl && (
+                            <a href={gcUrl} target="_blank" rel="noopener noreferrer"
+                              style={{background:"#4285f4",color:"#fff",borderRadius:6,padding:"5px 12px",fontSize:12,fontWeight:700,textDecoration:"none",display:"inline-block"}}>
+                              📆 Google Kalender
+                            </a>
+                          )}
+                          {t.datum && (
+                            <button onClick={()=>downloadICS([t])}
+                              style={{background:"none",border:"1.5px solid #4285f4",color:"#4285f4",borderRadius:6,padding:"4px 10px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                              ⬇️ .ics
+                            </button>
+                          )}
+                          {saved ? (
+                            <span style={{fontSize:12,color:"#2e7d5e",fontWeight:700,padding:"5px 0"}}>✅ Im Projekt gespeichert</span>
+                          ) : savingTermin?.index===i ? (
+                            <>
+                              <select onChange={e=>setSavingTermin(s=>({...s,projektId:e.target.value}))}
+                                style={{border:"1.5px solid #d6cfc4",borderRadius:6,padding:"4px 8px",fontSize:12,fontFamily:"Georgia,serif",background:"#fff"}}>
+                                <option value="">– Projekt wählen –</option>
+                                {projekte.map(p=><option key={p.id} value={p.id}>{p.kunde} – {p.auftrag}</option>)}
+                              </select>
+                              <button onClick={()=>terminSpeichern(t,savingTermin.projektId)} disabled={!savingTermin.projektId}
+                                style={{background:"#2e7d5e",color:"#fff",border:"none",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif",opacity:savingTermin.projektId?1:0.4}}>
+                                ✓ Speichern
+                              </button>
+                              <button onClick={()=>setSavingTermin(null)} style={{background:"none",border:"1.5px solid #d6cfc4",color:"#888",borderRadius:6,padding:"4px 9px",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>✕</button>
+                            </>
+                          ) : (
+                            <button onClick={()=>setSavingTermin({index:i,projektId:""})}
+                              style={{background:"none",border:"1.5px solid #2e7d5e",color:"#2e7d5e",borderRadius:6,padding:"4px 11px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                              + In Projekt
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {result.auftraege?.length > 0 && (
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:0.6,opacity:0.4,marginBottom:7}}>💼 Aufträge / Anfragen ({result.auftraege.length})</div>
+                  {result.auftraege.map((a,i)=>(
+                    <div key={i} style={{background:"#fff",border:"1.5px solid #ede8df",borderRadius:8,padding:"10px 13px",marginBottom:7}}>
+                      <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
+                        <span style={{fontWeight:700}}>{a.kunde}</span>
+                        {a.prioritaet&&<span style={{fontSize:11,background:badgeFarbe[a.prioritaet]+"15",color:badgeFarbe[a.prioritaet],border:`1px solid ${badgeFarbe[a.prioritaet]}`,borderRadius:5,padding:"1px 7px",fontWeight:700}}>{a.prioritaet}</span>}
+                      </div>
+                      <div style={{fontSize:12,color:"#666"}}>{a.beschreibung}{a.adresse&&` · 📍 ${a.adresse}`}</div>
+                      <button onClick={()=>onNeueProjekt({_prefill:true,kunde:a.kunde,auftrag:a.beschreibung,adresse:a.adresse||""})}
+                        style={{marginTop:7,background:"#d4a017",color:"#2b2217",border:"none",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                        + Projekt anlegen
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.bestellungen?.length > 0 && (
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:0.6,opacity:0.4,marginBottom:7}}>📦 Material / Bestellungen ({result.bestellungen.length})</div>
+                  {result.bestellungen.map((b,i)=>(
+                    <div key={i} style={{background:"#fff",border:"1.5px solid #ede8df",borderRadius:8,padding:"8px 13px",marginBottom:7,fontSize:13}}>
+                      <strong>{b.artikel}</strong>
+                      <div style={{fontSize:12,color:"#666"}}>{b.menge&&`Menge: ${b.menge} `}{b.lieferant&&`· ${b.lieferant} `}{b.notiz&&`· ${b.notiz}`}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.aufgaben?.length > 0 && (
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:0.6,opacity:0.4,marginBottom:7}}>✅ Aufgaben ({result.aufgaben.length})</div>
+                  {result.aufgaben.map((a,i)=>(
+                    <div key={i} style={{background:"#fff",border:"1.5px solid #ede8df",borderRadius:8,padding:"8px 13px",marginBottom:7,fontSize:13}}>
+                      {a.aufgabe}{a.faellig&&<span style={{color:"#888",fontSize:12}}> · Fällig: {a.faellig}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+// ─── LEXOFFICE TAB ────────────────────────────────────────────────────────────
+function LexofficeTab({ p, onChange }) {
+  const belege = [
+    { chk:"lex_angebot", nr:"lex_angebotsnr", label:"Angebot" },
+    { chk:"lex_auftragsbestaetigung", nr:"lex_auftragsnr", label:"Auftragsbestätigung" },
+    { chk:"lex_lieferschein", nr:"lex_lieferscheinnr", label:"Lieferschein" },
+    { chk:"lex_rechnung", nr:"lex_rechnungsnr", label:"Rechnung" },
+  ];
+  const done = belege.filter(b => p[b.chk]).length;
+  return (
+    <div>
+      <div style={secTitle}>Lexoffice Belege</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {belege.map(b => (
+          <div key={b.chk} style={{ display:"flex", alignItems:"center", gap:10, background: p[b.chk]?"#edf7f3":"#fafaf8", border:`1.5px solid ${p[b.chk]?"#2e7d5e":"#e0d9cf"}`, borderRadius:8, padding:"8px 14px" }}>
+            <span onClick={() => onChange({...p,[b.chk]:!p[b.chk]})} style={{ fontSize:20, cursor:"pointer", userSelect:"none" }}>{p[b.chk]?"✅":"⬜"}</span>
+            <span style={{ fontWeight:700, fontSize:14, minWidth:160 }}>{b.label}</span>
+            <input value={p[b.nr]||""} onChange={e=>onChange({...p,[b.nr]:e.target.value})} placeholder={`Nr. z.B. AN-2026-001`}
+              style={{ ...inpSm, width:180 }} onClick={e=>e.stopPropagation()} />
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop:12 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ flex:1, height:7, background:"#ede8df", borderRadius:99, overflow:"hidden" }}>
+            <div style={{ width:`${(done/4)*100}%`, height:"100%", background:done===4?"#2e7d5e":"#d4a017", borderRadius:99, transition:"width 0.3s" }} />
+          </div>
+          <span style={{ fontSize:12, color:"#888", whiteSpace:"nowrap" }}>{done}/4 Belege</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CHECKLISTE TAB ───────────────────────────────────────────────────────────
+function ChecklisteTab({ p, onChange }) {
+  const [neu, setNeu] = useState("");
+  function addItem() {
+    if (!neu.trim()) return;
+    onChange({...p, checkliste:[...p.checkliste, { id:Date.now(), text:neu.trim(), erledigt:false }]});
+    setNeu("");
+  }
+  function toggleItem(id) { onChange({...p, checkliste:p.checkliste.map(c => c.id===id?{...c,erledigt:!c.erledigt}:c)}); }
+  function deleteItem(id) { onChange({...p, checkliste:p.checkliste.filter(c=>c.id!==id)}); }
+  const done = p.checkliste.filter(c=>c.erledigt).length;
+  const total = p.checkliste.length;
+  return (
+    <div>
+      <div style={secTitle}>Checkliste</div>
+      {total > 0 && (
+        <div style={{ marginBottom:10, display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ flex:1, height:6, background:"#ede8df", borderRadius:99, overflow:"hidden" }}>
+            <div style={{ width:`${total>0?(done/total)*100:0}%`, height:"100%", background:done===total&&total>0?"#2e7d5e":"#d4a017", borderRadius:99, transition:"width 0.3s" }} />
+          </div>
+          <span style={{ fontSize:12, color:"#888" }}>{done}/{total}</span>
+        </div>
+      )}
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {p.checkliste.map(c => (
+          <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, background:c.erledigt?"#f0faf5":"#fff", border:"1.5px solid #ede8df", borderRadius:8, padding:"8px 12px" }}>
+            <span onClick={()=>toggleItem(c.id)} style={{ fontSize:20, cursor:"pointer", userSelect:"none" }}>{c.erledigt?"✅":"⬜"}</span>
+            <span style={{ flex:1, fontSize:14, textDecoration:c.erledigt?"line-through":"none", color:c.erledigt?"#999":"#2b2217" }}>{c.text}</span>
+            <button onClick={()=>deleteItem(c.id)} style={btnOutline("#c0392b")}>🗑</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display:"flex", gap:8, marginTop:10 }}>
+        <input value={neu} onChange={e=>setNeu(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addItem()} placeholder="Neuer Punkt…" style={{ ...inp, flex:1 }} />
+        <button onClick={addItem} style={{ background:"#2b2217", color:"#f5f0e8", border:"none", borderRadius:7, padding:"6px 16px", fontWeight:700, cursor:"pointer", fontFamily:"Georgia,serif" }}>+ Hinzufügen</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── TERMINE TAB ──────────────────────────────────────────────────────────────
+function TermineTab({ p, onChange }) {
+  const leer = { id:null, titel:"", datum:"", uhrzeit:"08:00", dauer:60, notiz:"" };
+  const [form, setForm] = useState(leer);
+  const [editId, setEditId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+
+  function startNeu() { setForm({...leer,id:Date.now()}); setEditId(null); setShowForm(true); }
+  function startEdit(t) { setForm({...t}); setEditId(t.id); setShowForm(true); }
+  function speichern() {
+    if (!form.titel||!form.datum) return;
+    const termine = editId ? p.termine.map(t=>t.id===editId?form:t) : [...p.termine, form];
+    onChange({...p, termine}); setShowForm(false); setEditId(null); setForm(leer);
+  }
+  function loeschen(id) { onChange({...p, termine:p.termine.filter(t=>t.id!==id)}); }
+
+  return (
+    <div>
+      <div style={secTitle}>Termine & Google Kalender</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {[...p.termine].sort((a,b)=>a.datum.localeCompare(b.datum)).map(t => {
+          const tage = tageBis(t.datum);
+          const gc = googleLink(t, p.kunde, p.auftrag);
+          return (
+            <div key={t.id} style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:8, padding:"10px 14px", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap", opacity:tage!==null&&tage<0?0.6:1 }}>
+              <div style={{ fontSize:22 }}>📅</div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontWeight:700 }}>{t.titel}</div>
+                <div style={{ fontSize:12, color:"#666", marginTop:2 }}>
+                  {fmtDate(t.datum,{weekday:"short",day:"2-digit",month:"long",year:"numeric"})}
+                  {t.uhrzeit&&` · ${t.uhrzeit} Uhr`}{t.dauer&&` · ${t.dauer} min`}
+                </div>
+                {t.notiz&&<div style={{ fontSize:12, color:"#8b7355", fontStyle:"italic" }}>{t.notiz}</div>}
+              </div>
+              {tage!==null&&tage>=0&&<Badge t={tage} />}
+              {gc&&<a href={gc} target="_blank" rel="noopener noreferrer" style={{ background:"#4285f4", color:"#fff", borderRadius:7, padding:"5px 12px", fontSize:12, fontWeight:700, textDecoration:"none" }}>📆 Google Kalender</a>}
+              <button onClick={()=>startEdit(t)} style={btnOutline("#d4a017")}>✏️</button>
+              <button onClick={()=>loeschen(t.id)} style={btnOutline("#c0392b")}>🗑</button>
+            </div>
+          );
+        })}
+        {p.termine.length===0&&<div style={{ fontSize:13, color:"#aaa", fontStyle:"italic" }}>Noch keine Termine.</div>}
+      </div>
+
+      {showForm && (
+        <div style={{ background:"#fffdf5", border:"1.5px dashed #d4a017", borderRadius:8, padding:"14px", marginTop:10 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 130px 90px 80px", gap:8, marginBottom:8 }}>
+            <div><label style={labelSt}>Bezeichnung *</label><input value={form.titel} onChange={e=>setForm(f=>({...f,titel:e.target.value}))} placeholder="z.B. Aufmaß vor Ort" style={inp} autoFocus /></div>
+            <div><label style={labelSt}>Datum *</label><input type="date" value={form.datum} onChange={e=>setForm(f=>({...f,datum:e.target.value}))} style={inp} /></div>
+            <div><label style={labelSt}>Uhrzeit</label><input type="time" value={form.uhrzeit} onChange={e=>setForm(f=>({...f,uhrzeit:e.target.value}))} style={inp} /></div>
+            <div><label style={labelSt}>Dauer (min)</label><input type="number" value={form.dauer} onChange={e=>setForm(f=>({...f,dauer:Number(e.target.value)}))} style={inp} /></div>
+          </div>
+          <input value={form.notiz} onChange={e=>setForm(f=>({...f,notiz:e.target.value}))} placeholder="Notiz (optional)" style={{...inp,marginBottom:8}} />
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={speichern} style={{ background:"#2e7d5e", color:"#fff", border:"none", borderRadius:6, padding:"6px 18px", fontWeight:700, cursor:"pointer", fontFamily:"Georgia,serif" }}>✓ Speichern</button>
+            <button onClick={()=>{setShowForm(false);setEditId(null);}} style={btnOutline("#888")}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+      {!showForm&&<button onClick={startNeu} style={{ marginTop:10, background:"#4285f4", color:"#fff", border:"none", borderRadius:7, padding:"7px 18px", fontSize:13, fontWeight:700, cursor:"pointer" }}>+ Termin & Google Kalender</button>}
+    </div>
+  );
+}
+
+// ─── MATERIAL TAB ─────────────────────────────────────────────────────────────
+function MaterialTab({ p, onChange }) {
+  const leer = { id:null, material:"", menge:"", lieferant:"", bestellt:false, liefertermin:"", erhalten:false };
+  const [form, setForm] = useState(leer);
+  const [editId, setEditId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+
+  function startNeu() { setForm({...leer,id:Date.now()}); setEditId(null); setShowForm(true); }
+  function startEdit(b) { setForm({...b}); setEditId(b.id); setShowForm(true); }
+  function speichern() {
+    if (!form.material) return;
+    const bestellungen = editId ? p.bestellungen.map(b=>b.id===editId?form:b) : [...p.bestellungen,form];
+    onChange({...p,bestellungen}); setShowForm(false); setEditId(null); setForm(leer);
+  }
+  function loeschen(id) { onChange({...p,bestellungen:p.bestellungen.filter(b=>b.id!==id)}); }
+  function toggle(id,feld) { onChange({...p,bestellungen:p.bestellungen.map(b=>b.id===id?{...b,[feld]:!b[feld]}:b)}); }
+
+  const cols = "1fr 90px 110px 75px 105px 75px 65px";
+  return (
+    <div>
+      <div style={secTitle}>Material & Bestellungen</div>
+      <div style={{ borderRadius:8, overflow:"hidden", border:"1px solid #ede8df" }}>
+        <div style={{ display:"grid", gridTemplateColumns:cols, gap:4, padding:"6px 10px", background:"#2b2217", color:"#f5f0e8", fontSize:11, fontWeight:700, letterSpacing:0.4, textTransform:"uppercase" }}>
+          {["Material","Menge","Lieferant","Bestellt","Liefertermin","Erhalten",""].map((h,i)=><div key={i} style={{textAlign:i===3||i===5?"center":"left"}}>{h}</div>)}
+        </div>
+        {p.bestellungen.map(b=>(
+          <div key={b.id} style={{ display:"grid", gridTemplateColumns:cols, gap:4, padding:"8px 10px", alignItems:"center", background:b.erhalten?"#f0faf5":"#fff", borderBottom:"1px solid #ede8df", fontSize:13 }}>
+            <div style={{ fontWeight:600, color:b.erhalten?"#999":"#2b2217", textDecoration:b.erhalten?"line-through":"none" }}>{b.material}</div>
+            <div style={{ color:"#666", fontSize:12 }}>{b.menge}</div>
+            <div style={{ color:"#666", fontSize:12 }}>{b.lieferant}</div>
+            <div style={{ textAlign:"center" }}><span onClick={()=>toggle(b.id,"bestellt")} style={{ cursor:"pointer", fontSize:18 }}>{b.bestellt?"✅":"⬜"}</span></div>
+            <div style={{ fontSize:12 }}>{b.liefertermin?fmtDate(b.liefertermin,{day:"2-digit",month:"short"}):""}{b.erhalten&&<span style={{color:"#2e7d5e",fontWeight:700}}> ✓</span>}</div>
+            <div style={{ textAlign:"center" }}><span onClick={()=>toggle(b.id,"erhalten")} style={{ cursor:"pointer", fontSize:18 }}>{b.erhalten?"✅":"⬜"}</span></div>
+            <div style={{ display:"flex", gap:3 }}>
+              <button onClick={()=>startEdit(b)} style={btnOutline("#d4a017")}>✏️</button>
+              <button onClick={()=>loeschen(b.id)} style={btnOutline("#c0392b")}>🗑</button>
+            </div>
+          </div>
+        ))}
+        {p.bestellungen.length===0&&<div style={{ padding:"12px 14px", color:"#aaa", fontStyle:"italic", fontSize:13 }}>Noch kein Material eingetragen.</div>}
+        <div style={{ background:"#f5f0e8", padding:"8px 10px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <span style={{ fontSize:12, color:"#888" }}>{p.bestellungen.filter(b=>b.bestellt).length}/{p.bestellungen.length} bestellt · {p.bestellungen.filter(b=>b.erhalten).length} erhalten</span>
+          {!showForm&&<button onClick={startNeu} style={{ background:"#d4a017", color:"#2b2217", border:"none", borderRadius:6, padding:"5px 14px", fontSize:12, fontWeight:700, cursor:"pointer" }}>+ Material</button>}
+        </div>
+      </div>
+      {showForm&&(
+        <div style={{ background:"#fffdf5", border:"1.5px dashed #d4a017", borderRadius:8, padding:"12px", marginTop:8 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 90px 110px", gap:8, marginBottom:8 }}>
+            <div><label style={labelSt}>Material *</label><input value={form.material} onChange={e=>setForm(f=>({...f,material:e.target.value}))} placeholder="z.B. Eichenholz 20mm" style={inp} autoFocus /></div>
+            <div><label style={labelSt}>Menge</label><input value={form.menge} onChange={e=>setForm(f=>({...f,menge:e.target.value}))} placeholder="12 Platten" style={inp} /></div>
+            <div><label style={labelSt}>Lieferant</label><input value={form.lieferant} onChange={e=>setForm(f=>({...f,lieferant:e.target.value}))} placeholder="Holz Wagner" style={inp} /></div>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"130px 1fr 1fr", gap:8, marginBottom:8, alignItems:"center" }}>
+            <div><label style={labelSt}>Liefertermin</label><input type="date" value={form.liefertermin} onChange={e=>setForm(f=>({...f,liefertermin:e.target.value}))} style={inp} /></div>
+            <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", fontSize:13 }}><input type="checkbox" checked={form.bestellt} onChange={e=>setForm(f=>({...f,bestellt:e.target.checked}))} /> Bestellt</label>
+            <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", fontSize:13 }}><input type="checkbox" checked={form.erhalten} onChange={e=>setForm(f=>({...f,erhalten:e.target.checked}))} /> Erhalten</label>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={speichern} style={{ background:"#2e7d5e", color:"#fff", border:"none", borderRadius:6, padding:"6px 18px", fontWeight:700, cursor:"pointer", fontFamily:"Georgia,serif" }}>✓ Speichern</button>
+            <button onClick={()=>{setShowForm(false);setEditId(null);}} style={btnOutline("#888")}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── STUNDEN TAB ─────────────────────────────────────────────────────────────
+function StundenTab({ p, onChange, apiKey }) {
+  const leer = { id:null, datum:"", taetigkeit:"", stunden:1, stundensatz:65 };
+  const [form, setForm] = useState(leer);
+  const [editId, setEditId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [kiOpen, setKiOpen] = useState(false);
+  const [kiText, setKiText] = useState("");
+  const [kiLoading, setKiLoading] = useState(false);
+
+  async function kiAusfuellen() {
+    if (!kiText.trim()) return;
+    setKiLoading(true);
+    try {
+      const sys = `Du bist Assistent für einen Tischler. Extrahiere aus dem Text Informationen für einen Stundeneintrag.
+Antworte NUR mit JSON (kein Markdown):
+{"datum":"JJJJ-MM-TT oder leer","taetigkeit":"Text","stunden":Zahl,"stundensatz":65}
+Datum: Wenn "heute" → leerlassen, wenn ein Wochentag/Datum genannt → entsprechendes Datum. Stunden als Dezimalzahl (z.B. 5.5 für 5,5 Stunden).`;
+      const text = await callKI(apiKey, sys, kiText, 400);
+      const d = parseKIJSON(text);
+      setForm(f => ({
+        ...f,
+        id: f.id || Date.now(),
+        datum: d.datum || new Date().toISOString().slice(0,10),
+        taetigkeit: d.taetigkeit || f.taetigkeit,
+        stunden: d.stunden || f.stunden,
+        stundensatz: d.stundensatz || f.stundensatz
+      }));
+      setShowForm(true);
+      setKiOpen(false);
+      setKiText("");
+    } catch(e) { alert("KI-Fehler: " + e.message); }
+    finally { setKiLoading(false); }
+  }
+
+  function startNeu() { setForm({...leer,id:Date.now()}); setEditId(null); setShowForm(true); }
+  function startEdit(s) { setForm({...s}); setEditId(s.id); setShowForm(true); }
+  function speichern() {
+    if (!form.datum||!form.taetigkeit) return;
+    const stunden = editId ? p.stunden.map(s=>s.id===editId?form:s) : [...p.stunden,form];
+    onChange({...p,stunden}); setShowForm(false); setEditId(null); setForm(leer);
+  }
+  function loeschen(id) { onChange({...p,stunden:p.stunden.filter(s=>s.id!==id)}); }
+
+  const totalStunden = p.stunden.reduce((s,e)=>s+Number(e.stunden||0),0);
+  const totalBetrag = p.stunden.reduce((s,e)=>s+(Number(e.stunden||0)*Number(e.stundensatz||0)),0);
+
+  return (
+    <div>
+      <div style={secTitle}>Stunden erfassen</div>
+      {/* KI-Schnelleingabe */}
+      <div style={{ background:"#fffdf5", border:"1.5px solid #d4a017", borderRadius:8, padding:"10px 13px", marginBottom:14 }}>
+        <div onClick={()=>setKiOpen(o=>!o)} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", userSelect:"none" }}>
+          <span>🤖</span>
+          <span style={{ fontWeight:700, fontSize:13 }}>KI-Schnelleingabe</span>
+          <span style={{ fontSize:11, color:"#8b7355" }}>– Arbeit beschreiben, KI füllt das Formular</span>
+          <span style={{ marginLeft:"auto", fontSize:11, color:"#aaa" }}>{kiOpen?"▲":"▼"}</span>
+        </div>
+        {kiOpen && (
+          <div style={{ marginTop:10 }}>
+            <textarea
+              value={kiText}
+              onChange={e=>setKiText(e.target.value)}
+              placeholder={'Beschreibe deine Arbeit:\n"Heute 6,5 Stunden bei Renneke Schreibtisch montiert, Tischplatte befestigt und Kabel verlegt"'}
+              style={{ width:"100%", border:"1.5px solid #d6cfc4", borderRadius:6, padding:"8px 10px", fontSize:13, fontFamily:"Georgia,serif", minHeight:80, resize:"vertical", boxSizing:"border-box", background:"#fff" }}
+              autoFocus
+            />
+            <div style={{ display:"flex", gap:8, marginTop:7 }}>
+              <button onClick={kiAusfuellen} disabled={kiLoading||!kiText.trim()}
+                style={{ background:"#2b2217", color:"#f5f0e8", border:"none", borderRadius:7, padding:"7px 18px", fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"Georgia,serif", opacity:kiLoading||!kiText.trim()?0.5:1 }}>
+                {kiLoading?"⏳ KI füllt aus…":"🤖 Formular ausfüllen"}
+              </button>
+              <button onClick={()=>{setKiOpen(false);setKiText("");}} style={{ background:"none", border:"1.5px solid #d6cfc4", color:"#888", borderRadius:7, padding:"7px 12px", fontSize:12, cursor:"pointer", fontFamily:"Georgia,serif" }}>Abbrechen</button>
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Summen-Karten */}
+      <div style={{ display:"flex", gap:10, marginBottom:12 }}>
+        {[
+          { label:"Stunden gesamt", wert:`${totalStunden.toFixed(1)} h`, farbe:"#2e7d5e" },
+          { label:"Betrag gesamt", wert:`€ ${totalBetrag.toLocaleString("de-DE")}`, farbe:"#2b2217" },
+        ].map(k=>(
+          <div key={k.label} style={{ background:"#fff", border:`1.5px solid ${k.farbe}30`, borderLeft:`4px solid ${k.farbe}`, borderRadius:8, padding:"8px 16px", flex:1 }}>
+            <div style={{ fontSize:18, fontWeight:700, color:k.farbe }}>{k.wert}</div>
+            <div style={{ fontSize:11, opacity:0.6 }}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+      {/* Einträge */}
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {[...p.stunden].sort((a,b)=>b.datum.localeCompare(a.datum)).map(s=>(
+          <div key={s.id} style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:8, padding:"9px 14px", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+            <div style={{ fontSize:13, color:"#666", minWidth:90 }}>{fmtDate(s.datum,{day:"2-digit",month:"short",year:"numeric"})}</div>
+            <div style={{ flex:1, fontWeight:600 }}>{s.taetigkeit}</div>
+            <div style={{ fontSize:13, color:"#2e7d5e", fontWeight:700, whiteSpace:"nowrap" }}>{s.stunden} h</div>
+            <div style={{ fontSize:13, color:"#888", whiteSpace:"nowrap" }}>@ € {s.stundensatz}/h</div>
+            <div style={{ fontSize:13, fontWeight:700, whiteSpace:"nowrap" }}>= € {(s.stunden*s.stundensatz).toLocaleString("de-DE")}</div>
+            <button onClick={()=>startEdit(s)} style={btnOutline("#d4a017")}>✏️</button>
+            <button onClick={()=>loeschen(s.id)} style={btnOutline("#c0392b")}>🗑</button>
+          </div>
+        ))}
+        {p.stunden.length===0&&<div style={{ fontSize:13, color:"#aaa", fontStyle:"italic" }}>Noch keine Stunden erfasst.</div>}
+      </div>
+      {showForm&&(
+        <div style={{ background:"#fffdf5", border:"1.5px dashed #d4a017", borderRadius:8, padding:"12px", marginTop:10 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"130px 1fr 80px 80px", gap:8, marginBottom:8 }}>
+            <div><label style={labelSt}>Datum *</label><input type="date" value={form.datum} onChange={e=>setForm(f=>({...f,datum:e.target.value}))} style={inp} /></div>
+            <div><label style={labelSt}>Tätigkeit *</label><input value={form.taetigkeit} onChange={e=>setForm(f=>({...f,taetigkeit:e.target.value}))} placeholder="z.B. Montage Küche" style={inp} autoFocus /></div>
+            <div><label style={labelSt}>Stunden</label><input type="number" step="0.5" value={form.stunden} onChange={e=>setForm(f=>({...f,stunden:Number(e.target.value)}))} style={inp} /></div>
+            <div><label style={labelSt}>€/Stunde</label><input type="number" value={form.stundensatz} onChange={e=>setForm(f=>({...f,stundensatz:Number(e.target.value)}))} style={inp} /></div>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={speichern} style={{ background:"#2e7d5e", color:"#fff", border:"none", borderRadius:6, padding:"6px 18px", fontWeight:700, cursor:"pointer", fontFamily:"Georgia,serif" }}>✓ Speichern</button>
+            <button onClick={()=>{setShowForm(false);setEditId(null);}} style={btnOutline("#888")}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+      {!showForm&&<button onClick={startNeu} style={{ marginTop:10, background:"#2b2217", color:"#f5f0e8", border:"none", borderRadius:7, padding:"7px 18px", fontSize:13, fontWeight:700, cursor:"pointer" }}>+ Stunden eintragen</button>}
+    </div>
+  );
+}
+
+// ─── ABNAHME TAB ─────────────────────────────────────────────────────────────
+function AbnahmeTab({ p, onChange }) {
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      <div style={secTitle}>Abnahme & Zahlung</div>
+      {/* Abnahme */}
+      <div style={{ background: p.abnahme_bestaetigt?"#edf7f3":"#fff", border:`1.5px solid ${p.abnahme_bestaetigt?"#2e7d5e":"#ede8df"}`, borderRadius:10, padding:"16px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:p.abnahme_bestaetigt?12:0 }}>
+          <span onClick={()=>onChange({...p,abnahme_bestaetigt:!p.abnahme_bestaetigt})} style={{ fontSize:28, cursor:"pointer", userSelect:"none" }}>{p.abnahme_bestaetigt?"✅":"⬜"}</span>
+          <div>
+            <div style={{ fontWeight:700, fontSize:15 }}>🖊 Kundenabnahme bestätigt</div>
+            <div style={{ fontSize:12, color:"#888" }}>Kunde hat das Werk abgenommen und für gut befunden</div>
+          </div>
+        </div>
+        {p.abnahme_bestaetigt&&(
+          <div style={{ display:"grid", gridTemplateColumns:"150px 1fr", gap:10, marginTop:8 }}>
+            <div><label style={labelSt}>Datum der Abnahme</label><input type="date" value={p.abnahme_datum||""} onChange={e=>onChange({...p,abnahme_datum:e.target.value})} style={inp} /></div>
+            <div><label style={labelSt}>Notiz zur Abnahme</label><input value={p.abnahme_notiz||""} onChange={e=>onChange({...p,abnahme_notiz:e.target.value})} placeholder="z.B. Kunde sehr zufrieden, kleine Nachjustierung Tür" style={inp} /></div>
+          </div>
+        )}
+      </div>
+      {/* Zahlung */}
+      <div style={{ background:p.zahlung_eingegangen?"#edf7f3":"#fff", border:`1.5px solid ${p.zahlung_eingegangen?"#2e7d5e":"#ede8df"}`, borderRadius:10, padding:"16px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:p.zahlung_eingegangen?12:0 }}>
+          <span onClick={()=>onChange({...p,zahlung_eingegangen:!p.zahlung_eingegangen})} style={{ fontSize:28, cursor:"pointer", userSelect:"none" }}>{p.zahlung_eingegangen?"✅":"⬜"}</span>
+          <div>
+            <div style={{ fontWeight:700, fontSize:15 }}>💶 Zahlung eingegangen</div>
+            <div style={{ fontSize:12, color:"#888" }}>Rechnungsbetrag vollständig bezahlt</div>
+          </div>
+        </div>
+        {p.zahlung_eingegangen&&(
+          <div style={{ marginTop:8 }}>
+            <label style={labelSt}>Datum des Zahlungseingangs</label>
+            <input type="date" value={p.zahlung_datum||""} onChange={e=>onChange({...p,zahlung_datum:e.target.value})} style={{ ...inp, maxWidth:200 }} />
+          </div>
+        )}
+      </div>
+      {/* Google Forms */}
+      <div style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:10, padding:"16px" }}>
+        <div style={{ fontWeight:700, fontSize:14, marginBottom:12 }}>📝 Formulare – Holzservice Rump</div>
+        <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+          <a href="https://docs.google.com/forms/d/e/1FAIpQLScQwtKDAkV7MIdz1SgO3aSJiGMM6Bxq-7l6NNACfsEos3ewnw/viewform"
+            target="_blank" rel="noopener noreferrer"
+            style={{ display:"flex", alignItems:"center", gap:8, background:"#2b2217", color:"#f5f0e8", borderRadius:8, padding:"10px 18px", fontSize:13, fontWeight:700, textDecoration:"none" }}>
+            🔧 Montagenachweis ausfüllen
+          </a>
+          <a href="https://docs.google.com/forms/d/e/1FAIpQLSd9czKHUcIwIA4TFLvofsYe0jU-W6SAIMOALhZUiZzCpMWpTg/viewform"
+            target="_blank" rel="noopener noreferrer"
+            style={{ display:"flex", alignItems:"center", gap:8, background:"#d4a017", color:"#2b2217", borderRadius:8, padding:"10px 18px", fontSize:13, fontWeight:700, textDecoration:"none" }}>
+            📐 Aufmaß ausfüllen
+          </a>
+        </div>
+        <div style={{ fontSize:11, color:"#aaa", marginTop:8 }}>Öffnet das Formular in einem neuen Tab – Daten werden direkt in dein Google Sheets gespeichert.</div>
+      </div>
+
+      {/* Google Drive Link */}
+      <div style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:10, padding:"16px" }}>
+        <div style={{ fontWeight:700, fontSize:14, marginBottom:8 }}>📁 Google Drive Projektordner</div>
+        <div style={{ display:"flex", gap:8 }}>
+          <input value={p.drive_link||""} onChange={e=>onChange({...p,drive_link:e.target.value})} placeholder="Google Drive Ordner-Link hier einfügen…" style={{ ...inp, flex:1 }} />
+          {p.drive_link&&<a href={p.drive_link} target="_blank" rel="noopener noreferrer" style={{ background:"#2b2217", color:"#f5f0e8", borderRadius:7, padding:"6px 14px", fontSize:13, fontWeight:700, textDecoration:"none", whiteSpace:"nowrap" }}>📁 Öffnen</a>}
+        </div>
+        <div style={{ fontSize:11, color:"#aaa", marginTop:5 }}>Tipp: Lege in Google Drive einen Ordner an (z.B. "Müller – Küche"), kopiere den Link und füge ihn hier ein.</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── WHATSAPP NACHRICHT ───────────────────────────────────────────────────────
+function waLink(telefon, text) {
+  const nr = (telefon||"").replace(/\D/g,"");
+  const encoded = encodeURIComponent(text);
+  return nr ? `https://wa.me/49${nr.replace(/^0/,"")}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
+}
+
+// ─── PLANUNG VIEW ─────────────────────────────────────────────────────────────
+function PlanungView({ projekte }) {
+  const heute = new Date(); heute.setHours(0,0,0,0);
+  const [wocheOffset, setWocheOffset] = useState(0);
+  const [planTag, setPlanTag] = useState("heute");
+
+  // Alle Termine aus allen Projekten zusammensammeln
+  const alleTermine = projekte.flatMap(p =>
+    (p.termine||[]).map(t => ({
+      ...t,
+      projektKunde: p.kunde,
+      projektAuftrag: p.auftrag,
+      projektTelefon: p.telefon||"",
+      projektAdresse: p.adresse||"",
+      projektId: p.id,
+    }))
+  ).sort((a,b) => a.datum.localeCompare(b.datum) || (a.uhrzeit||"").localeCompare(b.uhrzeit||""));
+
+  // ── Wochenansicht ──
+  const wochenStart = new Date(heute);
+  wochenStart.setDate(heute.getDate() - heute.getDay() + 1 + wocheOffset*7); // Montag
+  const wocheTage = Array.from({length:7}, (_,i) => {
+    const d = new Date(wochenStart); d.setDate(wochenStart.getDate()+i); return d;
+  });
+  const ISO = d => d.toISOString().slice(0,10);
+  const WOCHENTAGE = ["Mo","Di","Mi","Do","Fr","Sa","So"];
+  const MONATE2 = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
+
+  // ── Konflikte erkennen ──
+  function hatKonflikt(t, alle) {
+    if (!t.uhrzeit) return false;
+    const [h,m] = t.uhrzeit.split(":").map(Number);
+    const start = h*60+m, end = start+(t.dauer||60);
+    return alle.some(t2 => t2.id!==t.id && t2.datum===t.datum && t2.uhrzeit && (() => {
+      const [h2,m2] = t2.uhrzeit.split(":").map(Number);
+      const s2=h2*60+m2, e2=s2+(t2.dauer||60);
+      return start < e2 && end > s2;
+    })());
+  }
+
+  // ── Tagesplan ──
+  const zielTag = planTag==="heute" ? ISO(heute) : (() => { const m=new Date(heute); m.setDate(m.getDate()+1); return ISO(m); })();
+  const tagesTermine = alleTermine.filter(t => t.datum===zielTag);
+
+  // ── WhatsApp Texte ──
+  function waBestaetigung(t) {
+    return `Hallo ${t.projektKunde},\n\nhiermit bestätige ich unseren Termin am ${fmtDate(t.datum, {weekday:"long",day:"2-digit",month:"long"})}${t.uhrzeit?` um ${t.uhrzeit} Uhr`:""}.\n${t.projektAdresse?`\nAdresse: ${t.projektAdresse}\n`:""}\nBei Fragen gerne melden!\n\nViele Grüße\nHolzservice Rump`;
+  }
+  function waErinnerung(t) {
+    return `Hallo ${t.projektKunde},\n\nkurze Erinnerung: Morgen bin ich bei Ihnen${t.uhrzeit?` um ${t.uhrzeit} Uhr`:""}.\n${t.projektAdresse?`Adresse: ${t.projektAdresse}\n`:""}\nBis morgen!\n\nViele Grüße\nHolzservice Rump`;
+  }
+  function waAnfahrt(t) {
+    return `Hallo ${t.projektKunde},\n\nich bin auf dem Weg zu Ihnen und bin in ca. 30 Minuten vor Ort.\n\nBis gleich!\n\nHolzservice Rump`;
+  }
+
+  const TerminCard = ({ t, compact }) => {
+    const konflikt = hatKonflikt(t, alleTermine);
+    const morgen = (() => { const m=new Date(heute); m.setDate(m.getDate()+1); return ISO(m); })();
+    const [waOffen, setWaOffen] = useState(false);
+    return (
+      <div style={{ background:"#fff", border:`1.5px solid ${konflikt?"#c0392b":"#ede8df"}`, borderLeft:`4px solid ${konflikt?"#c0392b":"#2e7d5e"}`, borderRadius:8, padding:compact?"8px 12px":"11px 14px", marginBottom:compact?4:8 }}>
+        <div style={{ display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap" }}>
+          <div style={{ flex:1, minWidth:140 }}>
+            {konflikt && <div style={{ fontSize:10, fontWeight:700, color:"#c0392b", background:"#fdf0ef", borderRadius:4, padding:"1px 6px", display:"inline-block", marginBottom:4 }}>⚠️ KONFLIKT</div>}
+            <div style={{ fontWeight:700, fontSize:compact?13:14 }}>{t.titel}</div>
+            <div style={{ fontSize:12, color:"#8b7355", marginTop:2 }}>{t.projektKunde} · {t.projektAuftrag}</div>
+            <div style={{ fontSize:12, color:"#666", marginTop:2 }}>
+              {t.uhrzeit&&`🕐 ${t.uhrzeit} Uhr`}{t.dauer&&` · ${t.dauer} min`}
+              {t.projektAdresse&&<><br/>📍 {t.projektAdresse}</>}
+            </div>
+          </div>
+          <button onClick={()=>setWaOffen(o=>!o)}
+            style={{ background:"#25D366", color:"#fff", border:"none", borderRadius:8, padding:"7px 13px", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 }}>
+            💬 WhatsApp
+          </button>
+        </div>
+        {waOffen && (
+          <div style={{ marginTop:10, display:"flex", flexDirection:"column", gap:6, borderTop:"1px solid #f0ebe3", paddingTop:10 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#8b7355", textTransform:"uppercase", letterSpacing:.4, marginBottom:2 }}>Nachricht senden an {t.projektKunde}:</div>
+            <a href={waLink(t.projektTelefon, waBestaetigung(t))} target="_blank" rel="noopener noreferrer"
+              style={{ display:"flex", alignItems:"center", gap:8, background:"#edf7f3", border:"1px solid #b2dfc9", borderRadius:7, padding:"9px 13px", textDecoration:"none", color:"#2b2217" }}>
+              <span style={{ fontSize:16 }}>✅</span>
+              <div><div style={{ fontWeight:700, fontSize:13 }}>Terminbestätigung</div><div style={{ fontSize:11, color:"#666" }}>„hiermit bestätige ich unseren Termin am …"</div></div>
+            </a>
+            <a href={waLink(t.projektTelefon, waErinnerung(t))} target="_blank" rel="noopener noreferrer"
+              style={{ display:"flex", alignItems:"center", gap:8, background:"#fef9ec", border:"1px solid #f0d890", borderRadius:7, padding:"9px 13px", textDecoration:"none", color:"#2b2217" }}>
+              <span style={{ fontSize:16 }}>🔔</span>
+              <div><div style={{ fontWeight:700, fontSize:13 }}>Erinnerung (1 Tag vorher)</div><div style={{ fontSize:11, color:"#666" }}>„kurze Erinnerung: Morgen bin ich bei Ihnen …"</div></div>
+            </a>
+            <a href={waLink(t.projektTelefon, waAnfahrt(t))} target="_blank" rel="noopener noreferrer"
+              style={{ display:"flex", alignItems:"center", gap:8, background:"#f0f4ff", border:"1px solid #b8c8f0", borderRadius:7, padding:"9px 13px", textDecoration:"none", color:"#2b2217" }}>
+              <span style={{ fontSize:16 }}>🚐</span>
+              <div><div style={{ fontWeight:700, fontSize:13 }}>Anfahrt angekündigt</div><div style={{ fontSize:11, color:"#666" }}>„bin in ca. 30 Minuten vor Ort"</div></div>
+            </a>
+            {!t.projektTelefon && <div style={{ fontSize:11, color:"#c0392b", background:"#fdf0ef", borderRadius:6, padding:"6px 10px" }}>⚠️ Keine Telefonnummer im Projekt – WhatsApp öffnet sich ohne vorgewählte Nummer. Nummer im Projekt ergänzen!</div>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const konflikte = alleTermine.filter(t => hatKonflikt(t, alleTermine));
+
+  return (
+    <div style={{ padding:"16px 16px 60px", maxWidth:700, margin:"0 auto" }}>
+
+      {/* Konflikte Banner */}
+      {konflikte.length > 0 && (
+        <div style={{ background:"#fdf0ef", border:"1.5px solid #e6b8b2", borderRadius:10, padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:20 }}>⚠️</span>
+          <div>
+            <div style={{ fontWeight:700, color:"#8e2f24" }}>Terminkonflikte erkannt ({konflikte.length})</div>
+            <div style={{ fontSize:12, color:"#8e2f24", marginTop:2 }}>Mehrere Termine überschneiden sich zeitlich – bitte prüfen!</div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Tagesplan ── */}
+      <div style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:12, marginBottom:16, overflow:"hidden" }}>
+        <div style={{ background:"#2b2217", color:"#f5f0e8", padding:"12px 16px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ fontWeight:700, fontSize:15 }}>📋 Tagesplan</div>
+          <div style={{ display:"flex", background:"rgba(255,255,255,0.12)", borderRadius:7, padding:2, gap:2 }}>
+            {["heute","morgen"].map(t=>(
+              <button key={t} onClick={()=>setPlanTag(t)}
+                style={{ background:planTag===t?"#fff":"transparent", color:planTag===t?"#2b2217":"#f5f0e8", border:"none", borderRadius:5, padding:"5px 14px", fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"Georgia,serif" }}>
+                {t==="heute"?"Heute":"Morgen"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ padding:"14px 16px" }}>
+          {tagesTermine.length===0
+            ? <div style={{ textAlign:"center", padding:"24px 0", color:"#aaa", fontStyle:"italic" }}>Keine Termine {planTag==="heute"?"heute":"morgen"} 🎉</div>
+            : tagesTermine.map(t=><TerminCard key={t.id} t={t} />)
+          }
+        </div>
+      </div>
+
+      {/* ── Wochenansicht ── */}
+      <div style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:12, marginBottom:16, overflow:"hidden" }}>
+        <div style={{ background:"#2b2217", color:"#f5f0e8", padding:"12px 16px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <button onClick={()=>setWocheOffset(o=>o-1)} style={{ background:"rgba(255,255,255,0.15)", border:"none", color:"#fff", borderRadius:6, padding:"5px 13px", cursor:"pointer", fontSize:16, fontFamily:"Georgia,serif" }}>‹</button>
+          <div style={{ fontWeight:700, fontSize:15 }}>
+            🗓 {wocheTage[0].getDate()}. {MONATE2[wocheTage[0].getMonth()]} – {wocheTage[6].getDate()}. {MONATE2[wocheTage[6].getMonth()]} {wocheTage[0].getFullYear()}
+            {wocheOffset===0&&<span style={{ fontSize:11, background:"#d4a017", color:"#2b2217", borderRadius:5, padding:"1px 7px", marginLeft:8, fontWeight:700 }}>Diese Woche</span>}
+          </div>
+          <button onClick={()=>setWocheOffset(o=>o+1)} style={{ background:"rgba(255,255,255,0.15)", border:"none", color:"#fff", borderRadius:6, padding:"5px 13px", cursor:"pointer", fontSize:16, fontFamily:"Georgia,serif" }}>›</button>
+        </div>
+        <div style={{ padding:"12px 14px" }}>
+          {wocheTage.map((tag, i) => {
+            const iso = ISO(tag);
+            const istHeute = iso===ISO(heute);
+            const tagTermine = alleTermine.filter(t=>t.datum===iso);
+            return (
+              <div key={iso} style={{ display:"flex", gap:10, marginBottom:8, opacity:iso<ISO(heute)?0.5:1 }}>
+                <div style={{ width:50, flexShrink:0, textAlign:"center" }}>
+                  <div style={{ fontSize:11, fontWeight:700, color:istHeute?"#2e7d5e":"#8b7355", textTransform:"uppercase" }}>{WOCHENTAGE[i]}</div>
+                  <div style={{ fontSize:20, fontWeight:700, color:istHeute?"#2e7d5e":"#2b2217", background:istHeute?"#edf7f3":"transparent", borderRadius:"50%", width:36, height:36, display:"flex", alignItems:"center", justifyContent:"center", margin:"2px auto" }}>{tag.getDate()}</div>
+                </div>
+                <div style={{ flex:1, minHeight:40, borderLeft:"2px solid #ede8df", paddingLeft:10 }}>
+                  {tagTermine.length===0
+                    ? <div style={{ color:"#ccc", fontSize:12, paddingTop:8, fontStyle:"italic" }}>–</div>
+                    : tagTermine.map(t => <TerminCard key={t.id} t={t} compact />)
+                  }
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Kommende Termine (alle) ── */}
+      <div style={{ background:"#fff", border:"1.5px solid #ede8df", borderRadius:12, overflow:"hidden" }}>
+        <div style={{ background:"#2b2217", color:"#f5f0e8", padding:"12px 16px", fontWeight:700, fontSize:15 }}>📅 Alle kommenden Termine</div>
+        <div style={{ padding:"14px 16px" }}>
+          {alleTermine.filter(t=>t.datum>=ISO(heute)).length===0
+            ? <div style={{ textAlign:"center", padding:"24px 0", color:"#aaa", fontStyle:"italic" }}>Keine Termine geplant</div>
+            : alleTermine.filter(t=>t.datum>=ISO(heute)).map(t=><TerminCard key={t.id} t={t} />)
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── HAUPT APP ────────────────────────────────────────────────────────────────
+function TischlerApp() {
+  const STORAGE_KEY = "tischler_projekte_v3";
+  const [projekte, setProjekte] = useState(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : initialProjects;
+      return Array.isArray(parsed) ? parsed : initialProjects;
+    } catch (e) {
+      console.error("Fehler beim Laden aus localStorage:", e);
+      return initialProjects;
+    }
+  });
+  const [bearbeite, setBearbeite] = useState(null);
+  const [filter, setFilter] = useState("alle");
+  const [suche, setSuche] = useState("");
+  const [aufgeklappt, setAufgeklappt] = useState({ 1: true });
+  const [aktivTab, setAktivTab] = useState({});
+  const [pdfImport, setPdfImport] = useState({ loading:false, parsed:null, error:"" });
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("tischler_ki_apikey") || "");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showSetup, setShowSetup] = useState(() => !localStorage.getItem("tischler_ki_apikey"));
+  const [setupKeyInput, setSetupKeyInput] = useState("");
+  const [hauptansicht, setHauptansicht] = useState("projekte"); // "projekte" | "planung"
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(projekte));
+    } catch (e) {
+      console.error("Fehler beim Speichern in localStorage:", e);
+    }
+  }, [projekte]);
+
+  function saveApiKey(key) { setApiKey(key); localStorage.setItem("tischler_ki_apikey", key); setShowApiKey(false); }
+  function confirmSetup(key) {
+    if (key.trim()) { setApiKey(key.trim()); localStorage.setItem("tischler_ki_apikey", key.trim()); }
+    setShowSetup(false);
+  }
+
+  function handleKINeueProjekt(data) {
+    if (data._prefill) {
+      // open edit modal prefilled
+      setBearbeite({ ...leerProjekt, kunde: data.kunde||"", auftrag: data.auftrag||"", adresse: data.adresse||"" });
+    } else {
+      // update existing project (termin added)
+      updateProjekt(data);
+    }
+  }
+
+  const gefiltert = projekte.filter(p => {
+    const ms = filter==="alle"||p.status===filter;
+    const mq = suche===""||p.kunde.toLowerCase().includes(suche.toLowerCase())||p.auftrag.toLowerCase().includes(suche.toLowerCase());
+    return ms&&mq;
+  });
+
+  function updateProjekt(updated) { setProjekte(prev=>prev.map(p=>p.id===updated.id?updated:p)); }
+  function speichern(p) {
+    if (p.id) { setProjekte(prev=>prev.map(x=>x.id===p.id?p:x)); }
+    else { setProjekte(prev=>[...prev,{...p,id:Date.now()}]); }
+    setBearbeite(null);
+  }
+  function loeschen(id) {
+    if (confirm("Projekt wirklich löschen?")) { setProjekte(prev=>prev.filter(x=>x.id!==id)); setBearbeite(null); }
+  }
+  function toggleKlapp(id) { setAufgeklappt(prev=>({...prev,[id]:!prev[id]})); }
+  function getTab(id) { return aktivTab[id]||"lexoffice"; }
+  function setTab(id,tab) { setAktivTab(prev=>({...prev,[id]:tab})); }
+
+  async function handlePdfImport(file) {
+    if (!file) return;
+    setPdfImport({ loading:true, parsed:null, error:"" });
+    try {
+      const parsed = await parseOfferPdfFile(file);
+      if (!parsed.angebotNr && !parsed.kunde && !parsed.positions.length) {
+        throw new Error("Es konnten keine verwertbaren Angebotsdaten erkannt werden.");
+      }
+      setPdfImport({ loading:false, parsed, error:"" });
+    } catch (e) {
+      setPdfImport({ loading:false, parsed:null, error:e.message || "PDF konnte nicht gelesen werden." });
+    }
+  }
+
+  function confirmPdfImport() {
+    if (!pdfImport.parsed) return;
+    const project = makeImportedProject(pdfImport.parsed);
+    const existingIndex = projekte.findIndex(p => (p.lex_angebotsnr||"").trim() === (project.lex_angebotsnr||"").trim() && project.lex_angebotsnr);
+    if (existingIndex >= 0) {
+      if (!confirm(`Es gibt bereits ein Projekt mit ${project.lex_angebotsnr}. Soll es überschrieben werden?`)) return;
+      setProjekte(prev => prev.map((p, idx) => idx === existingIndex ? { ...p, ...project, id: p.id } : p));
+    } else {
+      setProjekte(prev => [project, ...prev]);
+    }
+    setPdfImport({ loading:false, parsed:null, error:"" });
+  }
+
+  const gesamtBudget = projekte.filter(p=>p.status!=="fertig"&&p.status!=="pausiert").reduce((s,p)=>s+Number(p.budget||0),0);
+  const offenBest = projekte.reduce((s,p)=>s+(p.bestellungen||[]).filter(b=>!b.bestellt).length,0);
+  const offenZahlung = projekte.filter(p=>p.lex_rechnung&&!p.zahlung_eingegangen&&p.status!=="angebot").length;
+  const naechsterT = projekte.flatMap(p=>(p.termine||[]).map(t=>({...t,kunde:p.kunde}))).filter(t=>tageBis(t.datum)>=0).sort((a,b)=>a.datum.localeCompare(b.datum))[0];
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#f5f0e8", fontFamily:"Georgia,serif", color:"#2b2217" }}>
+
+      {/* Header */}
+      <div style={{ background:"#2b2217", color:"#f5f0e8", padding:"20px 28px 16px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12, position:"relative" }}>
+        <div>
+          <div style={{ fontSize:20, fontWeight:700, letterSpacing:1.5, textTransform:"uppercase" }}>🪵 Tischler Projektverwaltung</div>
+          <div style={{ fontSize:11, opacity:0.5, marginTop:2 }}>Projekte · Lexoffice · Kalender · Stunden · Abnahme</div>
+        </div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+          {/* Hauptnavigation */}
+          <div style={{ display:"flex", background:"rgba(255,255,255,0.1)", borderRadius:8, padding:3, gap:2 }}>
+            <button onClick={()=>setHauptansicht("projekte")}
+              style={{ background:hauptansicht==="projekte"?"#fff":"transparent", color:hauptansicht==="projekte"?"#2b2217":"#f5f0e8", border:"none", borderRadius:6, padding:"7px 14px", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"Georgia,serif" }}>
+              📁 Projekte
+            </button>
+            <button onClick={()=>setHauptansicht("planung")}
+              style={{ background:hauptansicht==="planung"?"#fff":"transparent", color:hauptansicht==="planung"?"#2b2217":"#f5f0e8", border:"none", borderRadius:6, padding:"7px 14px", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"Georgia,serif" }}>
+              📅 Planung
+            </button>
+          </div>
+          {/* KI API Key */}
+          <button onClick={()=>setShowApiKey(s=>!s)}
+            style={{ background:apiKey?"#2e7d5e":"#d4a017", color:apiKey?"#fff":"#2b2217", border:"none", borderRadius:8, padding:"9px 14px", fontWeight:700, fontSize:13, cursor:"pointer" }}
+            title={apiKey?"API Key gesetzt – KI aktiv":"API Key setzen für KI-Funktionen"}>
+            🤖 {apiKey?"KI aktiv":"API Key"}
+          </button>
+          {showApiKey&&(
+            <div style={{ position:"absolute", top:70, right:28, background:"#fff", border:"1.5px solid #d6cfc4", borderRadius:10, padding:"14px 16px", zIndex:200, minWidth:340, boxShadow:"0 4px 20px #0003" }}>
+              <div style={{ fontWeight:700, fontSize:13, marginBottom:8 }}>🤖 Anthropic API Key</div>
+              <div style={{ fontSize:12, color:"#8b7355", marginBottom:10, lineHeight:1.5 }}>
+                In Claude.ai funktioniert die KI ohne Key. Als lokale HTML-Datei benötigst du einen eigenen Key von <strong>console.anthropic.com</strong>
+              </div>
+              <input type="password" defaultValue={apiKey} id="apiKeyInput"
+                placeholder="sk-ant-api03-..."
+                style={{ width:"100%", border:"1.5px solid #d6cfc4", borderRadius:6, padding:"7px 10px", fontSize:13, fontFamily:"Georgia,serif", marginBottom:10, boxSizing:"border-box" }} />
+              <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                {apiKey&&<button onClick={()=>saveApiKey("")} style={{ background:"none", border:"1.5px solid #c0392b", color:"#c0392b", borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:12, fontFamily:"Georgia,serif" }}>Entfernen</button>}
+                <button onClick={()=>setShowApiKey(false)} style={{ background:"none", border:"1.5px solid #d6cfc4", color:"#888", borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:12, fontFamily:"Georgia,serif" }}>Abbrechen</button>
+                <button onClick={()=>saveApiKey(document.getElementById("apiKeyInput").value.trim())}
+                  style={{ background:"#2b2217", color:"#f5f0e8", border:"none", borderRadius:6, padding:"5px 14px", cursor:"pointer", fontWeight:700, fontSize:12, fontFamily:"Georgia,serif" }}>Speichern</button>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={() => {
+              const data = JSON.stringify(projekte, null, 2);
+              const blob = new Blob([data], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "tischler-projekte-backup.json";
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            style={{ background:"#fff", color:"#2b2217", border:"none", borderRadius:8, padding:"9px 14px", fontWeight:700, fontSize:13, cursor:"pointer" }}
+          >
+            Backup exportieren
+          </button>
+          <label style={{ background:"#fff", color:"#2b2217", borderRadius:8, padding:"9px 14px", fontWeight:700, fontSize:13, cursor:"pointer", display:"inline-flex", alignItems:"center" }}>
+            Backup importieren
+            <input
+              type="file"
+              accept=".json,application/json"
+              style={{ display:"none" }}
+              onChange={(e) => {
+                const file = e.target.files && e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                  try {
+                    const imported = JSON.parse(ev.target.result);
+                    if (!Array.isArray(imported)) throw new Error("Ungültiges Format");
+                    setProjekte(imported);
+                    alert("Backup erfolgreich importiert.");
+                  } catch (err) {
+                    alert("Import fehlgeschlagen: ungültige Datei.");
+                  }
+                };
+                reader.readAsText(file);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <label style={{ background:"#fff", color:"#2b2217", borderRadius:8, padding:"9px 14px", fontWeight:700, fontSize:13, cursor:"pointer", display:"inline-flex", alignItems:"center" }}>
+            PDF-Angebot importieren
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              style={{ display:"none" }}
+              onChange={(e) => {
+                const file = e.target.files && e.target.files[0];
+                if (file) handlePdfImport(file);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <button onClick={()=>setBearbeite({...leerProjekt})} style={{ background:"#d4a017", color:"#2b2217", border:"none", borderRadius:8, padding:"9px 18px", fontWeight:700, fontSize:14, cursor:"pointer" }}>
+            + Neues Projekt
+          </button>
+        </div>
+      </div>
+
+      {/* Kennzahlen */}
+      <div style={{ display:"flex", gap:12, padding:"16px 28px 0", flexWrap:"wrap" }}>
+        {[
+          { label:"In Arbeit", wert:projekte.filter(p=>p.status==="in_arbeit").length, farbe:"#2e7d5e" },
+          { label:"Angebote", wert:projekte.filter(p=>p.status==="angebot").length, farbe:"#d4a017" },
+          { label:"Angebote + Aufträge", wert:`€ ${gesamtBudget.toLocaleString("de-DE")}`, farbe:"#2b2217" },
+          { label:"Zu bestellen", wert:offenBest, farbe:offenBest>0?"#c0392b":"#2e7d5e" },
+          { label:"Zahlung offen", wert:offenZahlung, farbe:offenZahlung>0?"#c0392b":"#2e7d5e" },
+          { label:"Nächster Termin", wert:naechsterT?fmtDate(naechsterT.datum,{day:"2-digit",month:"short"}):"–", farbe:"#4285f4" },
+        ].map(k=>(
+          <div key={k.label} style={{ background:"#fff", borderRadius:10, padding:"10px 18px", minWidth:100, borderLeft:`4px solid ${k.farbe}`, boxShadow:"0 1px 4px #0001" }}>
+            <div style={{ fontSize:18, fontWeight:700, color:k.farbe }}>{k.wert}</div>
+            <div style={{ fontSize:11, opacity:0.6, marginTop:1 }}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* KI-Assistent Panel + Projektliste / Planung */}
+      {hauptansicht==="planung" ? (
+        <PlanungView projekte={projekte} />
+      ) : (
+        <>
+      {/* KI-Assistent Panel */}
+      <KIAssistentPanel projekte={projekte} apiKey={apiKey} onNeueProjekt={handleKINeueProjekt} />
+
+      {/* Filter */}
+      <div style={{ display:"flex", gap:8, padding:"14px 28px 8px", flexWrap:"wrap", alignItems:"center" }}>
+        <input placeholder="Kunde oder Auftrag…" value={suche} onChange={e=>setSuche(e.target.value)}
+          style={{ border:"1.5px solid #d6cfc4", borderRadius:8, padding:"7px 13px", fontSize:13, background:"#fff", fontFamily:"Georgia,serif", width:210 }} />
+        {["alle","angebot","in_arbeit","fertig","pausiert"].map(s=>(
+          <button key={s} onClick={()=>setFilter(s)} style={{ background:filter===s?"#2b2217":"#fff", color:filter===s?"#f5f0e8":"#2b2217", border:"1.5px solid #d6cfc4", borderRadius:8, padding:"6px 13px", fontSize:12, cursor:"pointer", fontFamily:"Georgia,serif" }}>
+            {s==="alle"?"Alle":STATUS[s].label}
+          </button>
+        ))}
+      </div>
+
+      {/* Projektliste */}
+      <div style={{ padding:"6px 28px 40px", display:"flex", flexDirection:"column", gap:12 }}>
+        {gefiltert.length===0&&<div style={{ textAlign:"center", padding:"48px 0", opacity:0.4 }}>Keine Projekte gefunden.</div>}
+
+        {gefiltert.map(p=>{
+          const st = STATUS[p.status];
+          const klappt = aufgeklappt[p.id];
+          const tab = getTab(p.id);
+          const checkDone = (p.checkliste||[]).filter(c=>c.erledigt).length;
+          const checkTotal = (p.checkliste||[]).length;
+          const allB = (p.bestellungen||[]).length;
+          const bestelltB = (p.bestellungen||[]).filter(b=>b.bestellt).length;
+          const lexDone = ["lex_angebot","lex_auftragsbestaetigung","lex_lieferschein","lex_rechnung"].filter(k=>p[k]).length;
+
+          return (
+            <div key={p.id} style={{ background:"#fff", borderRadius:12, boxShadow:"0 1px 5px #0001", borderLeft:`5px solid ${st.farbe}`, overflow:"hidden" }}>
+              {/* Kopf */}
+              <div style={{ padding:"14px 18px", display:"flex", alignItems:"center", gap:12, flexWrap:"wrap", cursor:"pointer" }} onClick={()=>toggleKlapp(p.id)}>
+                <span style={{ background:st.bg, color:st.farbe, borderRadius:7, padding:"3px 11px", fontSize:11, fontWeight:700, whiteSpace:"nowrap" }}>{st.label}</span>
+                <div style={{ flex:1, minWidth:140 }}>
+                  <div style={{ fontWeight:700, fontSize:15 }}>{p.kunde}</div>
+                  <div style={{ fontSize:12, opacity:0.6, marginTop:1 }}>{p.auftrag}</div>
+                  {p.ansprechpartner&&<div style={{ fontSize:11, color:"#8b7355", marginTop:2 }}>👤 {p.ansprechpartner}</div>}
+                  {p.notiz&&<div style={{ fontSize:11, color:"#8b7355", fontStyle:"italic", marginTop:2 }}>📝 {p.notiz}</div>}
+                </div>
+                {/* Mini-Badges */}
+                <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:11, color:"#5f6368", background:"#f1f3f4", borderRadius:6, padding:"2px 8px", fontWeight:600 }}>📋 {lexDone}/4</span>
+                  {checkTotal>0&&<span style={{ fontSize:11, color:checkDone===checkTotal?"#2e7d5e":"#d4a017", background:checkDone===checkTotal?"#edf7f3":"#fef9ec", borderRadius:6, padding:"2px 8px", fontWeight:600 }}>✅ {checkDone}/{checkTotal}</span>}
+                  {allB>0&&<span style={{ fontSize:11, color:bestelltB===allB?"#2e7d5e":"#c0392b", background:bestelltB===allB?"#edf7f3":"#fdf0ef", borderRadius:6, padding:"2px 8px", fontWeight:600 }}>📦 {bestelltB}/{allB}</span>}
+                  {p.abnahme_bestaetigt&&<span style={{ fontSize:11, color:"#2e7d5e", background:"#edf7f3", borderRadius:6, padding:"2px 8px", fontWeight:600 }}>🖊 Abgenommen</span>}
+                  {p.zahlung_eingegangen&&<span style={{ fontSize:11, color:"#2e7d5e", background:"#edf7f3", borderRadius:6, padding:"2px 8px", fontWeight:600 }}>💶 Bezahlt</span>}
+                </div>
+                <div style={{ textAlign:"right", display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+                  {p.budget&&<div style={{ fontWeight:700, fontSize:14 }}>€ {Number(p.budget).toLocaleString("de-DE")}</div>}
+                  {p.deadline&&<div style={{ fontSize:11, opacity:0.5 }}>📅 {fmtDate(p.deadline)}</div>}
+                  <Badge t={tageBis(p.deadline)} />
+                </div>
+                <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                  <button onClick={e=>{e.stopPropagation();setBearbeite({...p});}} style={{ background:"none", border:"1.5px solid #d6cfc4", borderRadius:7, padding:"4px 10px", cursor:"pointer", fontSize:12, fontFamily:"Georgia,serif" }}>✏️</button>
+                  <span style={{ fontSize:16, opacity:0.3 }}>{klappt?"▲":"▼"}</span>
+                </div>
+              </div>
+
+              {/* Tabs */}
+              {klappt&&(
+                <div style={{ borderTop:"1px solid #ede8df" }}>
+                  <div style={{ display:"flex", overflowX:"auto", borderBottom:"1px solid #ede8df" }}>
+                    {TABS.map(t=>(
+                      <button key={t.id} onClick={e=>{e.stopPropagation();setTab(p.id,t.id);}}
+                        style={{ background:tab===t.id?"#f5f0e8":"#fff", border:"none", borderBottom:tab===t.id?"2px solid #2b2217":"2px solid transparent", padding:"9px 15px", fontSize:12, fontWeight:tab===t.id?700:400, cursor:"pointer", fontFamily:"Georgia,serif", color:"#2b2217", whiteSpace:"nowrap" }}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ padding:"14px 18px 18px" }}>
+                    {tab==="lexoffice"&&<LexofficeTab p={p} onChange={updateProjekt} />}
+                    {tab==="checkliste"&&<ChecklisteTab p={p} onChange={updateProjekt} />}
+                    {tab==="termine"&&<TermineTab p={p} onChange={updateProjekt} />}
+                    {tab==="material"&&<MaterialTab p={p} onChange={updateProjekt} />}
+                    {tab==="stunden"&&<StundenTab p={p} onChange={updateProjekt} apiKey={apiKey} />}
+                    {tab==="abnahme"&&<AbnahmeTab p={p} onChange={updateProjekt} />}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+        </>
+      )}
+
+      {/* ── ERSTEINRICHTUNG KI-SETUP ── */}
+      {showSetup && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:500,display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0 0 0"}}>
+          <div style={{background:"#fff",borderRadius:"20px 20px 0 0",padding:"28px 22px 36px",width:"100%",maxWidth:520,boxShadow:"0 -4px 40px #0005"}}>
+            
+            {/* Titel */}
+            <div style={{textAlign:"center",marginBottom:22}}>
+              <div style={{fontSize:36,marginBottom:8}}>🤖</div>
+              <div style={{fontSize:20,fontWeight:700,fontFamily:"Georgia,serif",color:"#2b2217"}}>KI-Assistent einrichten</div>
+              <div style={{fontSize:13,color:"#8b7355",marginTop:4}}>Einmalig – dauert 2 Minuten</div>
+            </div>
+
+            {/* Schritte */}
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+              {[
+                { n:"1", text:"Gehe auf", link:"https://console.anthropic.com", linkText:"console.anthropic.com" },
+                { n:"2", text:"Account anlegen (kostenlos) → oben rechts \"API Keys\"" },
+                { n:"3", text:"\"Create Key\" → Key kopieren (beginnt mit sk-ant-…)" },
+                { n:"4", text:"Hier unten einfügen – wird nur lokal gespeichert" },
+              ].map(s=>(
+                <div key={s.n} style={{display:"flex",gap:12,alignItems:"flex-start",background:"#faf7f2",borderRadius:10,padding:"10px 13px"}}>
+                  <div style={{background:"#2b2217",color:"#f5f0e8",borderRadius:"50%",width:24,height:24,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0,marginTop:1}}>{s.n}</div>
+                  <div style={{fontSize:13,lineHeight:1.5,fontFamily:"Georgia,serif"}}>
+                    {s.text}
+                    {s.link && <> <a href={s.link} target="_blank" rel="noopener noreferrer" style={{color:"#2e7d5e",fontWeight:700}}>{s.linkText}</a></>}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Kosten Hinweis */}
+            <div style={{background:"#edf7f3",border:"1px solid #b2dfc9",borderRadius:10,padding:"10px 13px",marginBottom:18,fontSize:12,color:"#2e7d5e",lineHeight:1.5}}>
+              💡 <strong>Kosten:</strong> Ca. 0,01–0,05 € pro Nachrichtenanalyse. Mit 5 $ Guthaben kommst du Monate aus. Abrechnung nur was du nutzt.
+            </div>
+
+            {/* Eingabe */}
+            <div style={{marginBottom:14}}>
+              <label style={{display:"block",fontSize:11,fontWeight:700,color:"#8b7355",textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>API Key einfügen</label>
+              <input
+                type="text"
+                value={setupKeyInput}
+                onChange={e=>setSetupKeyInput(e.target.value)}
+                placeholder="sk-ant-api03-..."
+                style={{width:"100%",border:"2px solid #d6cfc4",borderRadius:10,padding:"13px 14px",fontSize:14,fontFamily:"Georgia,serif",boxSizing:"border-box",background:"#fff"}}
+                autoFocus
+              />
+            </div>
+
+            {/* Buttons */}
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <button onClick={()=>confirmSetup(setupKeyInput)}
+                style={{background:"#2b2217",color:"#f5f0e8",border:"none",borderRadius:12,padding:"15px",fontSize:16,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif",width:"100%"}}>
+                {setupKeyInput.trim() ? "✓ KI aktivieren" : "Ohne KI weitermachen →"}
+              </button>
+              {!setupKeyInput.trim() && (
+                <div style={{textAlign:"center",fontSize:11,color:"#aaa"}}>KI-Funktionen sind dann nicht verfügbar · Key jederzeit über 🤖-Button nachtragen</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {(pdfImport.loading || pdfImport.error || pdfImport.parsed) && (
+        <div style={{ position:"fixed", inset:0, background:"#0007", display:"flex", alignItems:"center", justifyContent:"center", zIndex:110, padding:16 }}
+          onClick={e=>e.target===e.currentTarget&&!pdfImport.loading&&setPdfImport({ loading:false, parsed:null, error:"" })}>
+          <div style={{ background:"#faf7f2", borderRadius:16, padding:"24px 22px 20px", width:"100%", maxWidth:900, boxShadow:"0 8px 40px #0004", maxHeight:"92vh", overflowY:"auto" }}>
+            <div style={{ fontSize:18, fontWeight:700, marginBottom:14 }}>PDF-Angebot importieren</div>
+
+            {pdfImport.loading && <div style={{ padding:"24px 0", fontSize:15 }}>PDF wird gelesen und geprüft…</div>}
+
+            {pdfImport.error && !pdfImport.loading && (
+              <div>
+                <div style={{ background:"#fdf0ef", color:"#8e2f24", border:"1px solid #e6b8b2", borderRadius:10, padding:"12px 14px", marginBottom:14 }}>
+                  {pdfImport.error}
+                </div>
+                <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                  <button onClick={()=>setPdfImport({ loading:false, parsed:null, error:"" })} style={btnOutline("#888")}>Schließen</button>
+                </div>
+              </div>
+            )}
+
+            {pdfImport.parsed && !pdfImport.loading && (
+              <div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(4, minmax(0, 1fr))", gap:10, marginBottom:14 }}>
+                  {[
+                    { label:"Datei", wert:pdfImport.parsed.fileName || "—" },
+                    { label:"Angebotsnr.", wert:pdfImport.parsed.angebotNr || "—" },
+                    { label:"Datum", wert:pdfImport.parsed.datum || "—" },
+                    { label:"Gültig bis", wert:pdfImport.parsed.gueltigBis || "—" },
+                  ].map(k => (
+                    <div key={k.label} style={{ background:"#fff", border:"1px solid #e7dfd3", borderRadius:10, padding:"10px 12px" }}>
+                      <div style={{ fontSize:11, opacity:0.55, textTransform:"uppercase", letterSpacing:0.5 }}>{k.label}</div>
+                      <div style={{ fontWeight:700, marginTop:3, fontSize:14 }}>{k.wert}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display:"grid", gridTemplateColumns:"1.2fr 1fr 1fr", gap:10, marginBottom:14 }}>
+                  <div style={{ background:"#fff", border:"1px solid #e7dfd3", borderRadius:10, padding:"10px 12px" }}>
+                    <div style={{ fontSize:11, opacity:0.55, textTransform:"uppercase", letterSpacing:0.5 }}>Kunde</div>
+                    <div style={{ fontWeight:700, marginTop:3 }}>{pdfImport.parsed.kunde || "—"}</div>
+                    <div style={{ fontSize:13, color:"#666", marginTop:4 }}>{pdfImport.parsed.adresse || "—"}</div>
+                  </div>
+                  <div style={{ background:"#fff", border:"1px solid #e7dfd3", borderRadius:10, padding:"10px 12px" }}>
+                    <div style={{ fontSize:11, opacity:0.55, textTransform:"uppercase", letterSpacing:0.5 }}>Auftrag</div>
+                    <div style={{ fontWeight:700, marginTop:3 }}>{pdfImport.parsed.auftrag || "—"}</div>
+                  </div>
+                  <div style={{ background:"#fff", border:"1px solid #e7dfd3", borderRadius:10, padding:"10px 12px" }}>
+                    <div style={{ fontSize:11, opacity:0.55, textTransform:"uppercase", letterSpacing:0.5 }}>Gesamtbetrag erkannt</div>
+                    <div style={{ fontWeight:700, marginTop:3 }}>€ {Number(pdfImport.parsed.budget || 0).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                  </div>
+                </div>
+
+                <div style={{ background:"#fff", border:"1px solid #e7dfd3", borderRadius:10, padding:"10px 12px", marginBottom:14 }}>
+                  <div style={{ fontSize:11, opacity:0.55, textTransform:"uppercase", letterSpacing:0.5, marginBottom:8 }}>Erkannte Positionen</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                    {pdfImport.parsed.positions.length ? pdfImport.parsed.positions.map((pos, idx) => (
+                      <div key={idx} style={{ border:"1px solid #efe7db", borderRadius:8, padding:"8px 10px", background:pos.optional ? "#faf7f2" : "#fffdf8" }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                          <div style={{ fontWeight:700 }}>{pos.pos} · {pos.title || "Ohne Titel"}</div>
+                          <div style={{ whiteSpace:"nowrap", fontWeight:700 }}>
+                            {pos.qtyText ? `${pos.qtyText} · ` : ""}€ {Number(pos.gesamtpreis || 0).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {pos.optional && <span style={{ marginLeft:8, color:"#8b7355", fontWeight:400 }}>(optional)</span>}
+                          </div>
+                        </div>
+                        {pos.details && <div style={{ fontSize:12, color:"#666", marginTop:4 }}>{pos.details}</div>}
+                      </div>
+                    )) : <div style={{ color:"#999", fontStyle:"italic" }}>Keine Positionen erkannt.</div>}
+                  </div>
+                </div>
+
+                <div style={{ fontSize:12, color:"#8b7355", marginBottom:14 }}>
+                  Beim Import wird ein neues Projekt angelegt. Pflicht-Positionen werden in Material übernommen. Optionale Positionen landen in der Notiz.
+                </div>
+
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:10 }}>
+                  <button onClick={()=>setPdfImport({ loading:false, parsed:null, error:"" })} style={btnOutline("#888")}>Abbrechen</button>
+                  <button onClick={confirmPdfImport} style={{ background:"#2e7d5e", color:"#fff", border:"none", borderRadius:8, padding:"8px 18px", cursor:"pointer", fontWeight:700, fontFamily:"Georgia,serif" }}>
+                    Als Projekt importieren
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Projekt anlegen / bearbeiten */}
+      {bearbeite&&(
+        <div style={{ position:"fixed", inset:0, background:"#0007", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100, padding:16 }}
+          onClick={e=>e.target===e.currentTarget&&setBearbeite(null)}>
+          <div style={{ background:"#faf7f2", borderRadius:16, padding:"28px 24px 22px", width:"100%", maxWidth:500, boxShadow:"0 8px 40px #0004", maxHeight:"92vh", overflowY:"auto" }}>
+            <div style={{ fontSize:17, fontWeight:700, marginBottom:18 }}>{bearbeite.id?"Projekt bearbeiten":"Neues Projekt anlegen"}</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              {[
+                {key:"kunde",label:"Kunde *",type:"text",placeholder:"z.B. Familie Müller",full:true},
+                {key:"auftrag",label:"Auftrag *",type:"text",placeholder:"z.B. Einbauküche Eiche",full:true},
+                {key:"ansprechpartner",label:"Ansprechpartner",type:"text",placeholder:"z.B. Thomas Müller"},
+                {key:"telefon",label:"Telefon",type:"text",placeholder:"0171 …"},
+                {key:"adresse",label:"Adresse",type:"text",placeholder:"Musterstr. 1, 80331 München",full:true},
+                {key:"deadline",label:"Deadline",type:"date"},
+                {key:"budget",label:"Budget (€)",type:"number",placeholder:"0"},
+              ].map(({key,label,type,placeholder,full})=>(
+                <div key={key} style={{ gridColumn:full?"1/-1":"auto" }}>
+                  <label style={labelSt}>{label}</label>
+                  <input type={type} value={bearbeite[key]||""} placeholder={placeholder} onChange={e=>setBearbeite(p=>({...p,[key]:e.target.value}))} style={inp} />
+                </div>
+              ))}
+              <div style={{ gridColumn:"1/-1" }}>
+                <label style={labelSt}>Status</label>
+                <select value={bearbeite.status} onChange={e=>setBearbeite(p=>({...p,status:e.target.value}))} style={inp}>
+                  {Object.entries(STATUS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn:"1/-1" }}>
+                <label style={labelSt}>Notiz</label>
+                <textarea value={bearbeite.notiz||""} placeholder="z.B. Sonderwunsch, Besonderheiten…" onChange={e=>setBearbeite(p=>({...p,notiz:e.target.value}))} rows={2}
+                  style={{ ...inp, resize:"vertical" }} />
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:18 }}>
+              {bearbeite.id&&<button onClick={()=>loeschen(bearbeite.id)} style={{ background:"none", border:"1.5px solid #c0392b", color:"#c0392b", borderRadius:8, padding:"8px 14px", cursor:"pointer", fontSize:13, fontFamily:"Georgia,serif" }}>Löschen</button>}
+              <button onClick={()=>setBearbeite(null)} style={{ background:"none", border:"1.5px solid #d6cfc4", color:"#2b2217", borderRadius:8, padding:"8px 14px", cursor:"pointer", fontSize:13, fontFamily:"Georgia,serif" }}>Abbrechen</button>
+              <button onClick={()=>{if(!bearbeite.kunde||!bearbeite.auftrag){alert("Bitte Kunde und Auftrag ausfüllen.");return;}speichern(bearbeite);}}
+                style={{ background:"#2b2217", color:"#f5f0e8", border:"none", borderRadius:8, padding:"8px 20px", cursor:"pointer", fontWeight:700, fontSize:14, fontFamily:"Georgia,serif" }}>
+                Speichern
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<TischlerApp />);
+  </script>
+</body>
+</html>
