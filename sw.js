@@ -1,45 +1,41 @@
-const CACHE = "holzservice-v2";
+const CACHE = "holzservice-v9";
 const ASSETS = [
   "/TischlerApp/",
   "/TischlerApp/index.html",
   "/TischlerApp/manifest.json",
-  "/TischlerApp/sw.js",
-  "https://unpkg.com/react@18/umd/react.development.js",
-  "https://unpkg.com/react-dom@18/umd/react-dom.development.js",
-  "https://unpkg.com/@babel/standalone/babel.min.js"
 ];
 
-// Installation – Assets cachen
 self.addEventListener("install", e => {
+  self.skipWaiting(); // Sofort aktiv werden
   e.waitUntil(
     caches.open(CACHE).then(cache => cache.addAll(ASSETS)).catch(() => {})
   );
-  self.skipWaiting();
 });
 
-// Aktivierung – alten Cache löschen
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => k !== CACHE).map(k => {
+        console.log("Alter Cache gelöscht:", k);
+        return caches.delete(k);
+      }))
     )
   );
   self.clients.claim();
 });
 
-// Fetch – Cache first, dann Netzwerk
+// Network first – immer frische Version laden, Cache nur als Fallback
 self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      if (cached) return cached;
-      return fetch(e.request).then(res => {
+    fetch(e.request)
+      .then(res => {
         if (res.ok) {
           const clone = res.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
         return res;
-      }).catch(() => cached);
-    })
+      })
+      .catch(() => caches.match(e.request))
   );
 });
