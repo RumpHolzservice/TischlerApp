@@ -2654,7 +2654,7 @@ async function cloudSyncSave(projekte, token) {
         projekte: (Array.isArray(projekte) ? projekte : []).map(normalizeProjekt)
     };
     const saved = await driveUploadJsonFile(existing?.id || null, rootId, CLOUD_SYNC_FILE, payload, token);
-    setCloudMeta({ fileId: saved.id, updatedAt: payload.updatedAt, modifiedTime: saved.modifiedTime });
+    setCloudMeta({ fileId: saved.id, remoteUpdatedAt: payload.updatedAt, updatedAt: payload.updatedAt, modifiedTime: saved.modifiedTime });
     return saved;
 }
 // ─── GOOGLE DRIVE BUTTON COMPONENT ───────────────────────────────────────────
@@ -2745,30 +2745,45 @@ function TischlerApp() {
     const [hauptansicht, setHauptansicht] = useState("projekte"); // "projekte" | "planung"
     const hatteLokaleDatenRef = useRef(!!localStorage.getItem(STORAGE_KEY));
     const ersterLokalerSaveRef = useRef(true);
+    const applyingRemoteRef = useRef(false);
+    const skipCloudSaveRef = useRef(false);
+    const localDirtyRef = useRef(false);
     const [cloudSync, setCloudSync] = useState({ connected: false, loading: false, msg: "Nicht verbunden", error: false, last: null });
+    const cloudSyncRef = useRef(cloudSync);
+    useEffect(() => { cloudSyncRef.current = cloudSync; }, [cloudSync]);
     useEffect(() => {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(projekte));
-            if (ersterLokalerSaveRef.current && !hatteLokaleDatenRef.current) {
+            if (ersterLokalerSaveRef.current) {
                 ersterLokalerSaveRef.current = false;
+                return;
             }
-            else {
-                ersterLokalerSaveRef.current = false;
-                setCloudMeta({ updatedAt: new Date().toISOString() });
+            if (applyingRemoteRef.current) {
+                applyingRemoteRef.current = false;
+                skipCloudSaveRef.current = true;
+                return;
             }
+            const now = new Date().toISOString();
+            localDirtyRef.current = true;
+            setCloudMeta({ localUpdatedAt: now });
         }
         catch (e) {
             console.error("Fehler beim Speichern in localStorage:", e);
         }
     }, [projekte]);
     useEffect(() => {
-        if (!cloudSync.connected || !_driveToken)
+        if (!cloudSync.connected || !_driveToken || !localDirtyRef.current)
             return;
+        if (skipCloudSaveRef.current) {
+            skipCloudSaveRef.current = false;
+            return;
+        }
         if (_cloudSaveTimer)
             clearTimeout(_cloudSaveTimer);
         _cloudSaveTimer = setTimeout(async () => {
             try {
                 await cloudSyncSave(projekte, _driveToken);
+                localDirtyRef.current = false;
                 const zeit = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
                 setCloudSync(s => ({ ...s, loading: false, error: false, msg: "Gespeichert " + zeit, last: zeit }));
             }
@@ -2781,6 +2796,23 @@ function TischlerApp() {
                 clearTimeout(_cloudSaveTimer);
         };
     }, [projekte, cloudSync.connected]);
+    useEffect(() => {
+        if (!cloudSync.connected || !_driveToken)
+            return;
+        const onFocus = () => cloudPruefenUndLaden(true);
+        const onVisibility = () => {
+            if (!document.hidden)
+                cloudPruefenUndLaden(true);
+        };
+        window.addEventListener("focus", onFocus);
+        document.addEventListener("visibilitychange", onVisibility);
+        const timer = setInterval(() => cloudPruefenUndLaden(true), 60000);
+        return () => {
+            window.removeEventListener("focus", onFocus);
+            document.removeEventListener("visibilitychange", onVisibility);
+            clearInterval(timer);
+        };
+    }, [cloudSync.connected]);
     function saveApiKey(key) { setApiKey(key); localStorage.setItem("tischler_ki_apikey", key); setShowApiKey(false); }
     function confirmSetup(key) {
         if (key.trim()) {
@@ -2823,6 +2855,23 @@ function TischlerApp() {
     function toggleKlapp(id) { setAufgeklappt(prev => ({ ...prev, [id]: !prev[id] })); }
     function getTab(id) { return aktivTab[id] || "lexoffice"; }
     function setTab(id, tab) { setAktivTab(prev => ({ ...prev, [id]: tab })); }
+    function cloudZeit() { return new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }); }
+    function cloudRemoteTime(meta) { return meta.remoteUpdatedAt || meta.modifiedTime || meta.updatedAt || ""; }
+    function cloudLocalTime(meta) { return meta.localUpdatedAt || ""; }
+    function applyCloudProjects(file, payload, msgPrefix) {
+        const cloudProjects = Array.isArray(payload?.projekte) ? payload.projekte.map(normalizeProjekt) : null;
+        if (!cloudProjects)
+            throw new Error("Cloud-Datei enthält keine Projektdaten.");
+        const cloudTime = payload?.updatedAt || file?.modifiedTime || new Date().toISOString();
+        applyingRemoteRef.current = true;
+        skipCloudSaveRef.current = true;
+        localDirtyRef.current = false;
+        setProjekte(cloudProjects);
+        hatteLokaleDatenRef.current = true;
+        setCloudMeta({ fileId: file.id, remoteUpdatedAt: cloudTime, updatedAt: cloudTime, modifiedTime: file.modifiedTime, lastPulledAt: new Date().toISOString() });
+        const zeit = cloudZeit();
+        setCloudSync({ connected: true, loading: false, error: false, msg: msgPrefix + " " + zeit, last: zeit });
+    }
     async function googleSyncJetzt() {
         setCloudSync(s => ({ ...s, loading: true, error: false, msg: "Verbinde mit Google…" }));
         driveInit(async (token, err) => {
@@ -2835,18 +2884,30 @@ function TischlerApp() {
                 const localMeta = getCloudMeta();
                 const cloudProjects = Array.isArray(payload?.projekte) ? payload.projekte.map(normalizeProjekt) : null;
                 const cloudTime = payload?.updatedAt || file?.modifiedTime || "";
-                const localTime = localMeta.updatedAt || "";
-                if (cloudProjects && (!hatteLokaleDatenRef.current || !localTime || cloudTime > localTime)) {
-                    setProjekte(cloudProjects);
-                    hatteLokaleDatenRef.current = true;
-                    setCloudMeta({ fileId: file.id, updatedAt: cloudTime, modifiedTime: file.modifiedTime });
-                    const zeit = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-                    setCloudSync({ connected: true, loading: false, error: false, msg: "Cloud geladen " + zeit, last: zeit });
+                const remoteTime = cloudRemoteTime(localMeta);
+                const localTime = cloudLocalTime(localMeta);
+                const cloudIsNewer = !!cloudProjects && !!cloudTime && (!remoteTime || cloudTime > remoteTime);
+                const localHasChanges = localDirtyRef.current || (!!localTime && (!remoteTime || localTime > remoteTime));
+                if (cloudProjects && (!hatteLokaleDatenRef.current || (cloudIsNewer && !localHasChanges))) {
+                    applyCloudProjects(file, payload, "Cloud geladen");
+                }
+                else if (cloudProjects && cloudIsNewer && localHasChanges) {
+                    const cloudLaden = confirm("Auf Google Drive liegt ein neuerer Stand, aber dieses Gerät hat auch lokale Änderungen.\n\nOK = Drive-Stand laden\nAbbrechen = lokalen Stand zu Drive hochladen");
+                    if (cloudLaden) {
+                        applyCloudProjects(file, payload, "Cloud geladen");
+                    }
+                    else {
+                        await cloudSyncSave(projekte, token);
+                        localDirtyRef.current = false;
+                        const zeit = cloudZeit();
+                        setCloudSync({ connected: true, loading: false, error: false, msg: "Lokaler Stand gespeichert " + zeit, last: zeit });
+                    }
                 }
                 else {
                     await cloudSyncSave(projekte, token);
+                    localDirtyRef.current = false;
                     hatteLokaleDatenRef.current = true;
-                    const zeit = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+                    const zeit = cloudZeit();
                     setCloudSync({ connected: true, loading: false, error: false, msg: "Cloud gespeichert " + zeit, last: zeit });
                 }
             }
@@ -2854,6 +2915,67 @@ function TischlerApp() {
                 setCloudSync({ connected: false, loading: false, error: true, msg: "Cloud-Sync Fehler: " + (e.message || e), last: null });
             }
         });
+    }
+    async function cloudLadenJetzt() {
+        setCloudSync(s => ({ ...s, loading: true, error: false, msg: "Lade Drive-Stand…" }));
+        driveInit(async (token, err) => {
+            if (err) {
+                setCloudSync({ connected: false, loading: false, error: true, msg: "Google Anmeldung fehlgeschlagen: " + err, last: null });
+                return;
+            }
+            try {
+                const { file, payload } = await cloudSyncLoad(token);
+                if (!file || !payload) {
+                    const zeit = cloudZeit();
+                    setCloudSync({ connected: true, loading: false, error: false, msg: "Noch keine Cloud-Datei vorhanden " + zeit, last: zeit });
+                    return;
+                }
+                if (localDirtyRef.current && !confirm("Dieses Gerät hat noch ungespeicherte lokale Änderungen. Trotzdem den Stand aus Google Drive laden?")) {
+                    const zeit = cloudZeit();
+                    setCloudSync({ connected: true, loading: false, error: false, msg: "Laden abgebrochen " + zeit, last: zeit });
+                    return;
+                }
+                applyCloudProjects(file, payload, "Drive-Stand geladen");
+            }
+            catch (e) {
+                setCloudSync({ connected: false, loading: false, error: true, msg: "Cloud-Laden Fehler: " + (e.message || e), last: null });
+            }
+        });
+    }
+    async function cloudPruefenUndLaden(silent = false) {
+        if (!_driveToken || !cloudSyncRef.current.connected)
+            return;
+        if (!silent)
+            setCloudSync(s => ({ ...s, loading: true, error: false, msg: "Prüfe Cloud…" }));
+        try {
+            const { file, payload } = await cloudSyncLoad(_driveToken);
+            if (!file || !payload) {
+                if (!silent) {
+                    const zeit = cloudZeit();
+                    setCloudSync({ connected: true, loading: false, error: false, msg: "Noch keine Cloud-Datei vorhanden " + zeit, last: zeit });
+                }
+                return;
+            }
+            const cloudProjects = Array.isArray(payload?.projekte) ? payload.projekte.map(normalizeProjekt) : null;
+            const cloudTime = payload?.updatedAt || file?.modifiedTime || "";
+            const remoteTime = cloudRemoteTime(getCloudMeta());
+            if (cloudProjects && cloudTime && (!remoteTime || cloudTime > remoteTime)) {
+                if (localDirtyRef.current) {
+                    const zeit = cloudZeit();
+                    setCloudSync({ connected: true, loading: false, error: false, msg: "Drive ist neuer – bitte ⬇️ Laden oder ☁️ Sync klicken " + zeit, last: zeit });
+                    return;
+                }
+                applyCloudProjects(file, payload, silent ? "Von anderem Gerät geladen" : "Drive-Stand geladen");
+            }
+            else if (!silent) {
+                const zeit = cloudZeit();
+                setCloudSync({ connected: true, loading: false, error: false, msg: "Schon aktuell " + zeit, last: zeit });
+            }
+        }
+        catch (e) {
+            if (!silent)
+                setCloudSync({ connected: false, loading: false, error: true, msg: "Cloud-Prüfung Fehler: " + (e.message || e), last: null });
+        }
     }
     async function handlePdfImport(file) {
         if (!file)
@@ -2895,7 +3017,7 @@ function TischlerApp() {
                 React.createElement("div", { style: { fontSize: 20, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase" } }, "\uD83E\uDEB5 Tischler Projektverwaltung"),
                 React.createElement("div", { style: { fontSize: 11, opacity: 0.5, marginTop: 2 } }, "Projekte \u00B7 Lexoffice \u00B7 Kalender \u00B7 Stunden \u00B7 Abnahme"),
                 React.createElement("div", { style: { fontSize: 10, opacity: 0.35, marginTop: 1, fontFamily: "monospace" } },
-                    "v9.1 Sync \u00B7 ",
+                    "v9.2 Auto-Sync \u00B7 ",
                     new Date().toLocaleDateString("de-DE"))),
             React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
                 React.createElement("div", { style: { display: "flex", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: 3, gap: 2 } },
@@ -2906,6 +3028,7 @@ function TischlerApp() {
                     apiKey ? "KI aktiv" : "API Key"),
                 React.createElement("button", { onClick: googleSyncJetzt, disabled: cloudSync.loading, style: { background: cloudSync.connected ? "#1a73e8" : "#fff", color: cloudSync.connected ? "#fff" : "#2b2217", border: cloudSync.error ? "2px solid #c0392b" : "none", borderRadius: 8, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: cloudSync.loading ? 0.65 : 1 }, title: cloudSync.msg },
                     cloudSync.loading ? "⏳ Sync…" : cloudSync.connected ? "☁️ Sync aktiv" : "☁️ Google Sync"),
+                cloudSync.connected && React.createElement("button", { onClick: cloudLadenJetzt, disabled: cloudSync.loading, style: { background: "#e8f0fe", color: "#1a73e8", border: "none", borderRadius: 8, padding: "9px 12px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: cloudSync.loading ? 0.65 : 1 }, title: "Stand aus Google Drive neu laden" }, "⬇️ Laden"),
                 showApiKey && (React.createElement("div", { style: { position: "absolute", top: 70, right: 28, background: "#fff", border: "1.5px solid #d6cfc4", borderRadius: 10, padding: "14px 16px", zIndex: 200, minWidth: 340, boxShadow: "0 4px 20px #0003" } },
                     React.createElement("div", { style: { fontWeight: 700, fontSize: 13, marginBottom: 8 } }, "\uD83E\uDD16 Anthropic API Key"),
                     React.createElement("div", { style: { fontSize: 12, color: "#8b7355", marginBottom: 10, lineHeight: 1.5 } },
@@ -2961,7 +3084,10 @@ function TischlerApp() {
             React.createElement("span", null,
                 cloudSync.connected ? "☁️ Google Drive Sync: " : "☁️ Google Drive Sync: ",
                 cloudSync.msg),
-            !cloudSync.connected && !cloudSync.loading && React.createElement("button", { onClick: googleSyncJetzt, style: { background: "#1a73e8", color: "#fff", border: "none", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" } }, "Jetzt verbinden"))),
+            React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+                cloudSync.connected && !cloudSync.loading && React.createElement("button", { onClick: () => cloudPruefenUndLaden(false), style: { background: "#fff", color: "#1a73e8", border: "1px solid #c5d8fb", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" } }, "Prüfen"),
+                cloudSync.connected && !cloudSync.loading && React.createElement("button", { onClick: cloudLadenJetzt, style: { background: "#1a73e8", color: "#fff", border: "none", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" } }, "Vom Drive laden"),
+                !cloudSync.connected && !cloudSync.loading && React.createElement("button", { onClick: googleSyncJetzt, style: { background: "#1a73e8", color: "#fff", border: "none", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" } }, "Jetzt verbinden")))),
         React.createElement("div", { style: { display: "flex", gap: 12, padding: "16px 28px 0", flexWrap: "wrap" } }, [
             { label: "In Arbeit", wert: projekte.filter(p => p.status === "in_arbeit").length, farbe: "#2e7d5e" },
             { label: "Angebote", wert: projekte.filter(p => p.status === "angebot").length, farbe: "#d4a017" },
