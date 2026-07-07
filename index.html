@@ -232,7 +232,7 @@ if (!window.React || !window.ReactDOM) {
     }
     throw new Error("React/ReactDOM konnte nicht geladen werden");
 }
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 // ─── Beispieldaten ────────────────────────────────────────────────────────────
 const initialProjects = [
     {
@@ -1926,8 +1926,7 @@ function PlanungView({ projekte }) {
             }
         });
     }
-    // Beim ersten Laden automatisch versuchen
-    useEffect(() => { gcalLaden(); }, []);
+    // Google Anmeldung nur per Klick starten – automatische OAuth-Popups werden im Browser oft blockiert.
     // Alle Termine aus Projekten
     const appTermine = projekte.flatMap(p => (p.termine || []).map(t => ({
         ...t, quelle: "app",
@@ -2399,19 +2398,27 @@ async function gcalUpdateEvent(eventId, termin, projektKunde, projektAdresse, to
     const event = terminZuGCalEvent(termin, projektKunde, projektAdresse);
     if (!event || !eventId)
         return;
-    await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
+    const r = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify(event)
     });
+    if (!r.ok) {
+        const e = await r.json().catch(() => ({ error: { message: r.status } }));
+        throw new Error(e.error?.message || r.status);
+    }
 }
 async function gcalDeleteEvent(eventId, token) {
     if (!eventId)
         return;
-    await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
+    const r = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`, {
         method: "DELETE",
         headers: { "Authorization": `Bearer ${token}` }
     });
+    if (!r.ok && r.status !== 404) {
+        const e = await r.json().catch(() => ({ error: { message: r.status } }));
+        throw new Error(e.error?.message || r.status);
+    }
 }
 async function gcalListCalendars(token) {
     const r = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50", {
@@ -2466,31 +2473,49 @@ async function gcalListEvents(timeMin, timeMax, token) {
         .sort((a, b) => a.datum.localeCompare(b.datum) || a.uhrzeit.localeCompare(b.uhrzeit));
 }
 let _driveToken = null;
+let _driveTokenExpiresAt = 0;
 let _tokenClient = null;
+let _drivePendingCallbacks = [];
+let _driveRequestInProgress = false;
 function driveInit(callback) {
-    if (typeof google === "undefined") {
+    if (typeof google === "undefined" || !google.accounts?.oauth2) {
         callback(null, "Google API nicht geladen");
         return;
     }
+    const tokenNochGueltig = _driveToken && Date.now() < (_driveTokenExpiresAt - 60000);
+    if (tokenNochGueltig) {
+        callback(_driveToken, null);
+        return;
+    }
+    _drivePendingCallbacks.push(callback);
+    if (_driveRequestInProgress)
+        return;
     if (!_tokenClient) {
         _tokenClient = google.accounts.oauth2.initTokenClient({
             client_id: DRIVE_CLIENT_ID,
             scope: DRIVE_SCOPE,
             callback: (resp) => {
+                _driveRequestInProgress = false;
+                const callbacks = _drivePendingCallbacks.splice(0);
                 if (resp.error) {
-                    callback(null, resp.error);
+                    callbacks.forEach(cb => cb(null, resp.error));
                     return;
                 }
                 _driveToken = resp.access_token;
-                callback(resp.access_token, null);
+                _driveTokenExpiresAt = Date.now() + (Number(resp.expires_in || 3600) * 1000);
+                callbacks.forEach(cb => cb(resp.access_token, null));
             }
         });
     }
-    if (_driveToken) {
-        callback(_driveToken, null);
-        return;
+    _driveRequestInProgress = true;
+    try {
+        _tokenClient.requestAccessToken({ prompt: _driveToken ? "" : "consent" });
     }
-    _tokenClient.requestAccessToken({ prompt: "consent" });
+    catch (e) {
+        _driveRequestInProgress = false;
+        const callbacks = _drivePendingCallbacks.splice(0);
+        callbacks.forEach(cb => cb(null, e.message || "Google Anmeldung konnte nicht geöffnet werden"));
+    }
 }
 async function driveRequest(method, url, body, token) {
     const headers = { "Authorization": `Bearer ${token}` };
@@ -2561,6 +2586,76 @@ async function driveUploadHTML(folderId, dateiname, htmlContent, token) {
     if (!r.ok)
         throw new Error("Upload fehlgeschlagen");
     return await r.json();
+}
+// ─── GOOGLE DRIVE DATEN-SYNC ──────────────────────────────────────────────────
+const CLOUD_SYNC_FILE = "tischler-projekte-sync.json";
+const CLOUD_META_KEY = "tischler_cloud_sync_meta_v1";
+let _cloudSaveTimer = null;
+function getCloudMeta() {
+    try {
+        return JSON.parse(localStorage.getItem(CLOUD_META_KEY) || "{}");
+    }
+    catch (e) {
+        return {};
+    }
+}
+function setCloudMeta(meta) {
+    localStorage.setItem(CLOUD_META_KEY, JSON.stringify({ ...getCloudMeta(), ...meta }));
+}
+async function driveFindFile(name, parentId, token) {
+    const q = `name='${name}' and '${parentId}' in parents and trashed=false`;
+    const r = await driveRequest("GET", `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc`, null, token);
+    return r.files?.[0] || null;
+}
+async function driveDownloadJson(fileId, token) {
+    const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+        headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (!r.ok) {
+        const e = await r.json().catch(() => ({ error: { message: r.status } }));
+        throw new Error(e.error?.message || r.status);
+    }
+    return await r.json();
+}
+async function driveUploadJsonFile(fileId, parentId, name, payload, token) {
+    const metadata = fileId ? { name } : { name, parents: [parentId], mimeType: "application/json" };
+    const form = new FormData();
+    form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+    form.append("file", new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+    const url = fileId
+        ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,modifiedTime`
+        : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime";
+    const r = await fetch(url, {
+        method: fileId ? "PATCH" : "POST",
+        headers: { "Authorization": `Bearer ${token}` },
+        body: form
+    });
+    if (!r.ok) {
+        const e = await r.json().catch(() => ({ error: { message: r.status } }));
+        throw new Error(e.error?.message || r.status);
+    }
+    return await r.json();
+}
+async function cloudSyncLoad(token) {
+    const rootId = await driveEnsureRoot(token);
+    const file = await driveFindFile(CLOUD_SYNC_FILE, rootId, token);
+    if (!file)
+        return { rootId, file: null, payload: null };
+    const payload = await driveDownloadJson(file.id, token);
+    return { rootId, file, payload };
+}
+async function cloudSyncSave(projekte, token) {
+    const rootId = await driveEnsureRoot(token);
+    const existing = await driveFindFile(CLOUD_SYNC_FILE, rootId, token);
+    const payload = {
+        version: 1,
+        app: "TischlerApp",
+        updatedAt: new Date().toISOString(),
+        projekte: (Array.isArray(projekte) ? projekte : []).map(normalizeProjekt)
+    };
+    const saved = await driveUploadJsonFile(existing?.id || null, rootId, CLOUD_SYNC_FILE, payload, token);
+    setCloudMeta({ fileId: saved.id, updatedAt: payload.updatedAt, modifiedTime: saved.modifiedTime });
+    return saved;
 }
 // ─── GOOGLE DRIVE BUTTON COMPONENT ───────────────────────────────────────────
 function DriveButton({ projekt, onChange, compact }) {
@@ -2648,14 +2743,44 @@ function TischlerApp() {
     const [showSetup, setShowSetup] = useState(() => !localStorage.getItem("tischler_ki_apikey"));
     const [setupKeyInput, setSetupKeyInput] = useState("");
     const [hauptansicht, setHauptansicht] = useState("projekte"); // "projekte" | "planung"
+    const hatteLokaleDatenRef = useRef(!!localStorage.getItem(STORAGE_KEY));
+    const ersterLokalerSaveRef = useRef(true);
+    const [cloudSync, setCloudSync] = useState({ connected: false, loading: false, msg: "Nicht verbunden", error: false, last: null });
     useEffect(() => {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(projekte));
+            if (ersterLokalerSaveRef.current && !hatteLokaleDatenRef.current) {
+                ersterLokalerSaveRef.current = false;
+            }
+            else {
+                ersterLokalerSaveRef.current = false;
+                setCloudMeta({ updatedAt: new Date().toISOString() });
+            }
         }
         catch (e) {
             console.error("Fehler beim Speichern in localStorage:", e);
         }
     }, [projekte]);
+    useEffect(() => {
+        if (!cloudSync.connected || !_driveToken)
+            return;
+        if (_cloudSaveTimer)
+            clearTimeout(_cloudSaveTimer);
+        _cloudSaveTimer = setTimeout(async () => {
+            try {
+                await cloudSyncSave(projekte, _driveToken);
+                const zeit = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+                setCloudSync(s => ({ ...s, loading: false, error: false, msg: "Gespeichert " + zeit, last: zeit }));
+            }
+            catch (e) {
+                setCloudSync(s => ({ ...s, loading: false, error: true, msg: "Cloud-Sync Fehler: " + (e.message || e) }));
+            }
+        }, 1200);
+        return () => {
+            if (_cloudSaveTimer)
+                clearTimeout(_cloudSaveTimer);
+        };
+    }, [projekte, cloudSync.connected]);
     function saveApiKey(key) { setApiKey(key); localStorage.setItem("tischler_ki_apikey", key); setShowApiKey(false); }
     function confirmSetup(key) {
         if (key.trim()) {
@@ -2698,6 +2823,38 @@ function TischlerApp() {
     function toggleKlapp(id) { setAufgeklappt(prev => ({ ...prev, [id]: !prev[id] })); }
     function getTab(id) { return aktivTab[id] || "lexoffice"; }
     function setTab(id, tab) { setAktivTab(prev => ({ ...prev, [id]: tab })); }
+    async function googleSyncJetzt() {
+        setCloudSync(s => ({ ...s, loading: true, error: false, msg: "Verbinde mit Google…" }));
+        driveInit(async (token, err) => {
+            if (err) {
+                setCloudSync({ connected: false, loading: false, error: true, msg: "Google Anmeldung fehlgeschlagen: " + err, last: null });
+                return;
+            }
+            try {
+                const { file, payload } = await cloudSyncLoad(token);
+                const localMeta = getCloudMeta();
+                const cloudProjects = Array.isArray(payload?.projekte) ? payload.projekte.map(normalizeProjekt) : null;
+                const cloudTime = payload?.updatedAt || file?.modifiedTime || "";
+                const localTime = localMeta.updatedAt || "";
+                if (cloudProjects && (!hatteLokaleDatenRef.current || !localTime || cloudTime > localTime)) {
+                    setProjekte(cloudProjects);
+                    hatteLokaleDatenRef.current = true;
+                    setCloudMeta({ fileId: file.id, updatedAt: cloudTime, modifiedTime: file.modifiedTime });
+                    const zeit = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+                    setCloudSync({ connected: true, loading: false, error: false, msg: "Cloud geladen " + zeit, last: zeit });
+                }
+                else {
+                    await cloudSyncSave(projekte, token);
+                    hatteLokaleDatenRef.current = true;
+                    const zeit = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+                    setCloudSync({ connected: true, loading: false, error: false, msg: "Cloud gespeichert " + zeit, last: zeit });
+                }
+            }
+            catch (e) {
+                setCloudSync({ connected: false, loading: false, error: true, msg: "Cloud-Sync Fehler: " + (e.message || e), last: null });
+            }
+        });
+    }
     async function handlePdfImport(file) {
         if (!file)
             return;
@@ -2738,7 +2895,7 @@ function TischlerApp() {
                 React.createElement("div", { style: { fontSize: 20, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase" } }, "\uD83E\uDEB5 Tischler Projektverwaltung"),
                 React.createElement("div", { style: { fontSize: 11, opacity: 0.5, marginTop: 2 } }, "Projekte \u00B7 Lexoffice \u00B7 Kalender \u00B7 Stunden \u00B7 Abnahme"),
                 React.createElement("div", { style: { fontSize: 10, opacity: 0.35, marginTop: 1, fontFamily: "monospace" } },
-                    "v9 \u00B7 ",
+                    "v9.1 Sync \u00B7 ",
                     new Date().toLocaleDateString("de-DE"))),
             React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
                 React.createElement("div", { style: { display: "flex", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: 3, gap: 2 } },
@@ -2747,6 +2904,8 @@ function TischlerApp() {
                 React.createElement("button", { onClick: () => setShowApiKey(s => !s), style: { background: apiKey ? "#2e7d5e" : "#d4a017", color: apiKey ? "#fff" : "#2b2217", border: "none", borderRadius: 8, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer" }, title: apiKey ? "API Key gesetzt – KI aktiv" : "API Key setzen für KI-Funktionen" },
                     "\uD83E\uDD16 ",
                     apiKey ? "KI aktiv" : "API Key"),
+                React.createElement("button", { onClick: googleSyncJetzt, disabled: cloudSync.loading, style: { background: cloudSync.connected ? "#1a73e8" : "#fff", color: cloudSync.connected ? "#fff" : "#2b2217", border: cloudSync.error ? "2px solid #c0392b" : "none", borderRadius: 8, padding: "9px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: cloudSync.loading ? 0.65 : 1 }, title: cloudSync.msg },
+                    cloudSync.loading ? "⏳ Sync…" : cloudSync.connected ? "☁️ Sync aktiv" : "☁️ Google Sync"),
                 showApiKey && (React.createElement("div", { style: { position: "absolute", top: 70, right: 28, background: "#fff", border: "1.5px solid #d6cfc4", borderRadius: 10, padding: "14px 16px", zIndex: 200, minWidth: 340, boxShadow: "0 4px 20px #0003" } },
                     React.createElement("div", { style: { fontWeight: 700, fontSize: 13, marginBottom: 8 } }, "\uD83E\uDD16 Anthropic API Key"),
                     React.createElement("div", { style: { fontSize: 12, color: "#8b7355", marginBottom: 10, lineHeight: 1.5 } },
@@ -2798,6 +2957,11 @@ function TischlerApp() {
                             e.target.value = "";
                         } })),
                 React.createElement("button", { onClick: () => setBearbeite({ ...leerProjekt }), style: { background: "#d4a017", color: "#2b2217", border: "none", borderRadius: 8, padding: "9px 18px", fontWeight: 700, fontSize: 14, cursor: "pointer" } }, "+ Neues Projekt"))),
+        cloudSync.msg && (React.createElement("div", { style: { margin: "12px 28px 0", background: cloudSync.error ? "#fdf0ef" : cloudSync.connected ? "#e8f0fe" : "#fffdf5", border: `1.5px solid ${cloudSync.error ? "#e6b8b2" : cloudSync.connected ? "#c5d8fb" : "#f0d890"}`, color: cloudSync.error ? "#8e2f24" : cloudSync.connected ? "#3367d6" : "#8b7355", borderRadius: 9, padding: "9px 13px", fontSize: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" } },
+            React.createElement("span", null,
+                cloudSync.connected ? "☁️ Google Drive Sync: " : "☁️ Google Drive Sync: ",
+                cloudSync.msg),
+            !cloudSync.connected && !cloudSync.loading && React.createElement("button", { onClick: googleSyncJetzt, style: { background: "#1a73e8", color: "#fff", border: "none", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" } }, "Jetzt verbinden"))),
         React.createElement("div", { style: { display: "flex", gap: 12, padding: "16px 28px 0", flexWrap: "wrap" } }, [
             { label: "In Arbeit", wert: projekte.filter(p => p.status === "in_arbeit").length, farbe: "#2e7d5e" },
             { label: "Angebote", wert: projekte.filter(p => p.status === "angebot").length, farbe: "#d4a017" },

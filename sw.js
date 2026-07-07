@@ -1,4 +1,4 @@
-const CACHE = "holzservice-v9";
+const CACHE = "holzservice-v9-1-sync";
 const ASSETS = [
   "/TischlerApp/",
   "/TischlerApp/index.html",
